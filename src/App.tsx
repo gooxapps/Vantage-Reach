@@ -1,9 +1,11 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  AlertTriangle,
   BarChart2,
   BarChart3,
   Bell,
   CheckCheck,
+  CheckCircle2,
   ChevronDown,
   Crown,
   Home,
@@ -16,6 +18,7 @@ import {
   Shield,
   Sparkles,
   User,
+  X,
 } from 'lucide-react';
 import { AdminConsoleView } from './components/AdminConsoleView';
 import { AuthViews } from './components/AuthViews';
@@ -60,6 +63,8 @@ export default function App() {
   const [checkingAuth, setCheckingAuth] = useState(true);
   const [activeTab, setActiveTab] = useState<NavTab>('dashboard');
   const [selectedVideoId, setSelectedVideoId] = useState<number | null>(null);
+  const [paymentBanner, setPaymentBanner] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [paymentSyncSeq, setPaymentSyncSeq] = useState(0);
 
   const [notifications, setNotifications] = useState<NotificationRecord[]>([]);
   const [notifOpen, setNotifOpen] = useState(false);
@@ -94,6 +99,17 @@ export default function App() {
   isAuthedRef.current = Boolean(user);
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const tabParam = params.get('tab') as NavTab | null;
+    if (
+      tabParam &&
+      ['dashboard', 'submit', 'intelligence', 'seo', 'plans', 'campaigns', 'reports', 'profile', 'admin'].includes(
+        tabParam
+      )
+    ) {
+      setActiveTab(tabParam);
+    }
+
     initVisitorTracker();
     refreshMe();
     const unsubscribe = onUnauthorized(() => {
@@ -113,6 +129,55 @@ export default function App() {
       window.removeEventListener('vantage:app-sync', handleAppSync);
     };
   }, [fetchNotifications]);
+
+  useEffect(() => {
+    if (!user) return;
+    const params = new URLSearchParams(window.location.search);
+    const txRef = params.get('tx_ref') || params.get('reference') || params.get('trxref');
+    const transactionId = params.get('transaction_id');
+    const callbackStatus = params.get('status');
+
+    if (txRef) {
+      const cleanUrl = params.get('tab') ? `/?tab=${encodeURIComponent(params.get('tab')!)}` : '/';
+      window.history.replaceState({}, document.title, cleanUrl);
+
+      if (callbackStatus === 'cancelled') {
+        setPaymentBanner({
+          type: 'error',
+          text: `Checkout for reference ${txRef} was cancelled before completion.`,
+        });
+        return;
+      }
+
+      api
+        .post<{ verified?: boolean; alreadyVerified?: boolean; failureReason?: string }>('/api/payments/verify', {
+          txRef,
+          providerTransactionId: transactionId || undefined,
+        })
+        .then((res) => {
+          if (res.verified || res.alreadyVerified) {
+            setPaymentBanner({
+              type: 'success',
+              text: `Payment ${txRef} verified on server. Your order is now queued.`,
+            });
+            setPaymentSyncSeq((n) => n + 1);
+            window.dispatchEvent(new CustomEvent('vantage:app-sync'));
+            fetchNotifications();
+          } else {
+            setPaymentBanner({
+              type: 'error',
+              text: `Payment ${txRef} could not be verified: ${res.failureReason || 'Declined'}`,
+            });
+          }
+        })
+        .catch((err: any) => {
+          setPaymentBanner({
+            type: 'error',
+            text: err?.message || `Unable to verify payment reference ${txRef}.`,
+          });
+        });
+    }
+  }, [user?.id, fetchNotifications]);
 
   useEffect(() => {
     if (user) {
@@ -488,6 +553,33 @@ export default function App() {
 
         {/* Scrollable Workspace Content (generous bottom padding prevents fixed bottom nav overlap) */}
         <main className="flex-1 w-full max-w-6xl mx-auto px-4 sm:px-6 pt-3 pb-28 lg:py-6 lg:pb-10">
+          {paymentBanner && (
+            <div
+              role="status"
+              className={`mb-4 rounded-2xl border px-4 py-3 flex items-center justify-between gap-3 text-sm ${
+                paymentBanner.type === 'success'
+                  ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                  : 'bg-red-50 border-red-200 text-red-900'
+              }`}
+            >
+              <div className="flex items-center gap-2.5 min-w-0">
+                {paymentBanner.type === 'success' ? (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                ) : (
+                  <AlertTriangle className="w-4 h-4 text-red-600 shrink-0" />
+                )}
+                <span className="font-medium truncate sm:whitespace-normal">{paymentBanner.text}</span>
+              </div>
+              <button
+                type="button"
+                aria-label="Dismiss payment status"
+                onClick={() => setPaymentBanner(null)}
+                className="min-h-[36px] min-w-[36px] rounded-lg flex items-center justify-center hover:bg-black/5 shrink-0"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
           {activeTab === 'dashboard' && <CustomerDashboard user={user} onNavigate={handleNavigate} />}
           {activeTab === 'submit' && (
             <SubmitVideoView
@@ -506,6 +598,7 @@ export default function App() {
           )}
           {activeTab === 'seo' && (
             <SeoAndCompetitorsView
+              key={`seo-${paymentSyncSeq}`}
               selectedVideoId={selectedVideoId}
               onSelectVideo={setSelectedVideoId}
               onNavigate={handleNavigate}
@@ -518,7 +611,7 @@ export default function App() {
               onSuccessNavigate={(t) => handleNavigate(t)}
             />
           )}
-          {activeTab === 'campaigns' && <CampaignsView onNavigate={handleNavigate} />}
+          {activeTab === 'campaigns' && <CampaignsView key={`cmp-${paymentSyncSeq}`} onNavigate={handleNavigate} />}
           {activeTab === 'reports' && (
             <ReportsView selectedVideoId={selectedVideoId} onSelectVideo={setSelectedVideoId} />
           )}

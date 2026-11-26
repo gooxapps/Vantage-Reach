@@ -109,10 +109,16 @@ export async function initializePayment(params: InitPaymentParams) {
         amount: params.amount,
         currency: params.currency,
         redirect_url: params.callbackUrl,
+        payment_options: 'card,banktransfer,ussd,mobilemoneyghana,mpesa,account',
         customer: { email: params.email },
         customizations: {
           title: 'Vantage Reach',
           description: params.description,
+        },
+        meta: {
+          userId: params.userId,
+          campaignId: params.campaignId ?? null,
+          seoOrderId: params.seoOrderId ?? null,
         },
       }),
     });
@@ -173,7 +179,7 @@ export async function verifyPaymentOnServer(
 
   // Idempotent return if already verified
   if (payment.status === 'verified') {
-    return { payment, alreadyVerified: true };
+    return { payment, alreadyVerified: true, verified: true };
   }
 
   let verifiedOk = false;
@@ -187,31 +193,52 @@ export async function verifyPaymentOnServer(
     const data = (await res.json()) as {
       status?: boolean;
       message?: string;
-      data?: { status?: string; amount?: number; reference?: string };
+      data?: { status?: string; amount?: number; currency?: string; reference?: string };
     };
-    if (res.ok && data.status && data.data?.status === 'success') {
+    const expectedMinor = Math.round(Number(payment.amount) * 100);
+    const paidCurrency = String(data.data?.currency || '').toUpperCase();
+    if (
+      res.ok &&
+      data.status &&
+      data.data?.status === 'success' &&
+      Number(data.data?.amount || 0) >= expectedMinor &&
+      (!paidCurrency || paidCurrency === payment.currency.toUpperCase())
+    ) {
       verifiedOk = true;
       providerRef = data.data.reference || providerRef;
     } else {
       failureReason = data.data?.status || data.message || 'Paystack verification declined';
     }
-  } else if (payment.provider === 'flutterwave' && process.env.FLUTTERWAVE_SECRET_KEY && options.providerTransactionId) {
-    const res = await fetch(
-      `https://api.flutterwave.com/v3/transactions/${encodeURIComponent(options.providerTransactionId)}/verify`,
-      {
-        headers: { Authorization: `Bearer ${process.env.FLUTTERWAVE_SECRET_KEY}` },
-      }
-    );
+  } else if (payment.provider === 'flutterwave' && process.env.FLUTTERWAVE_SECRET_KEY) {
+    const verifyEndpoint = options.providerTransactionId
+      ? `https://api.flutterwave.com/v3/transactions/${encodeURIComponent(options.providerTransactionId)}/verify`
+      : `https://api.flutterwave.com/v3/transactions/verify_by_reference?tx_ref=${encodeURIComponent(txRef)}`;
+
+    const res = await fetch(verifyEndpoint, {
+      headers: { Authorization: `Bearer ${process.env.FLUTTERWAVE_SECRET_KEY}` },
+    });
     const data = (await res.json()) as {
       status?: string;
       message?: string;
-      data?: { status?: string; tx_ref?: string; id?: number };
+      data?: { status?: string; tx_ref?: string; id?: number; amount?: number; currency?: string };
     };
-    if (res.ok && data.status === 'success' && data.data?.status === 'successful' && data.data?.tx_ref === txRef) {
+    const paidAmount = Number(data.data?.amount || 0);
+    const paidCurrency = String(data.data?.currency || '').toUpperCase();
+    if (
+      res.ok &&
+      data.status === 'success' &&
+      data.data?.status === 'successful' &&
+      data.data?.tx_ref === txRef &&
+      paidAmount >= Number(payment.amount) &&
+      paidCurrency === payment.currency.toUpperCase()
+    ) {
       verifiedOk = true;
       providerRef = String(data.data.id || providerRef);
     } else {
-      failureReason = data.message || 'Flutterwave verification declined';
+      failureReason =
+        data.data?.status && data.data.status !== 'successful'
+          ? `Flutterwave status: ${data.data.status}`
+          : data.message || 'Flutterwave verification declined';
     }
   } else {
     // Sandbox verification path (never trusts browser redirect alone; executed server-side)
@@ -320,18 +347,25 @@ export async function verifyPaymentOnServer(
   return { payment: updated, alreadyVerified: false, verified: verifiedOk, failureReason };
 }
 
+function timingSafeEqualStr(a: string, b: string): boolean {
+  const bufA = Buffer.from(a, 'utf8');
+  const bufB = Buffer.from(b, 'utf8');
+  if (bufA.length === 0 || bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
 export function verifyWebhookSignature(provider: string, rawBody: string, headers: Record<string, string | string[] | undefined>): boolean {
   if (provider === 'paystack') {
     const secret = process.env.PAYSTACK_SECRET_KEY;
     const sig = String(headers['x-paystack-signature'] || '');
     if (!secret) return false;
     const expected = crypto.createHmac('sha512', secret).update(rawBody).digest('hex');
-    return sig.length > 0 && sig === expected;
+    return timingSafeEqualStr(sig, expected);
   }
   if (provider === 'flutterwave') {
     const expectedHash = process.env.FLUTTERWAVE_WEBHOOK_HASH;
     const sig = String(headers['verif-hash'] || '');
-    return Boolean(expectedHash && sig && sig === expectedHash);
+    return Boolean(expectedHash && timingSafeEqualStr(sig, expectedHash));
   }
   return false;
 }
