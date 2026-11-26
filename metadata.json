@@ -1,0 +1,6 @@
+{
+  "name": "Vantage Reach",
+  "description": "International YouTube creator discovery, promotion management, and Gemini-powered SEO intelligence platform by Vantage Talent Search Global.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
