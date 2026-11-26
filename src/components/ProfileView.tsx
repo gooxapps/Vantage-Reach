@@ -22,9 +22,16 @@ interface ProfileViewProps {
   onLogout: () => void;
   onUserUpdated: () => void;
   onOpenAdmin?: () => void;
+  onOpenNotification?: (n: NotificationRecord) => void;
 }
 
-export const ProfileView: React.FC<ProfileViewProps> = ({ user, onLogout, onUserUpdated, onOpenAdmin }) => {
+export const ProfileView: React.FC<ProfileViewProps> = ({
+  user,
+  onLogout,
+  onUserUpdated,
+  onOpenAdmin,
+  onOpenNotification,
+}) => {
   const { isInstalled, updateState, lastSyncedAt, buildId, checkForUpdate } = usePWAInstall();
   const [fullName, setFullName] = useState(user.fullName || '');
   const [phone, setPhone] = useState('');
@@ -47,24 +54,36 @@ export const ProfileView: React.FC<ProfileViewProps> = ({ user, onLogout, onUser
   const [error, setError] = useState('');
 
   useEffect(() => {
-    Promise.all([
-      api.get<{ profile: any }>('/api/profile'),
-      api.get<{ payments: PaymentRecord[] }>('/api/payments'),
-      api.get<{ notifications: NotificationRecord[] }>('/api/notifications'),
-    ])
-      .then(([pRes, payRes, nRes]) => {
-        if (pRes.profile) {
-          setFullName(pRes.profile.full_name || '');
-          setPhone(pRes.profile.phone || '');
-          setCountry(pRes.profile.country || 'United States');
-          setChannelHandle(pRes.profile.channel_handle || '');
-          setNotifyEmail(Boolean(pRes.profile.notify_email));
-          setNotifyInApp(Boolean(pRes.profile.notify_in_app));
-        }
-        setPayments(payRes.payments);
-        setNotifications(nRes.notifications);
-      })
-      .catch((err) => setError(err.message || 'Could not load profile.'));
+    const loadAll = () => {
+      Promise.all([
+        api.get<{ profile: any }>('/api/profile'),
+        api.get<{ payments: PaymentRecord[] }>('/api/payments'),
+        api.get<{ notifications: NotificationRecord[] }>('/api/notifications'),
+      ])
+        .then(([pRes, payRes, nRes]) => {
+          if (pRes.profile) {
+            setFullName(pRes.profile.full_name || '');
+            setPhone(pRes.profile.phone || '');
+            setCountry(pRes.profile.country || 'United States');
+            setChannelHandle(pRes.profile.channel_handle || '');
+            setNotifyEmail(Boolean(pRes.profile.notify_email));
+            setNotifyInApp(Boolean(pRes.profile.notify_in_app));
+          }
+          setPayments(payRes.payments);
+          setNotifications(nRes.notifications);
+        })
+        .catch((err) => setError(err.message || 'Could not load profile.'));
+    };
+
+    loadAll();
+    const syncNotificationsOnly = () => {
+      api
+        .get<{ notifications: NotificationRecord[] }>('/api/notifications')
+        .then((nRes) => setNotifications(nRes.notifications))
+        .catch(() => {});
+    };
+    window.addEventListener('vantage:notifications-sync', syncNotificationsOnly);
+    return () => window.removeEventListener('vantage:notifications-sync', syncNotificationsOnly);
   }, []);
 
   const handleSaveProfile = async (e: React.FormEvent) => {
@@ -126,6 +145,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({ user, onLogout, onUser
   const handleMarkAllRead = async () => {
     await api.post('/api/notifications/read-all');
     setNotifications((prev) => prev.map((n) => ({ ...n, is_read: 1 })));
+    window.dispatchEvent(new CustomEvent('vantage:app-sync'));
   };
 
   return (
@@ -441,29 +461,51 @@ export const ProfileView: React.FC<ProfileViewProps> = ({ user, onLogout, onUser
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Notifications Center */}
         <section className="lg:col-span-6 rounded-2xl border border-slate-200 bg-white p-5 space-y-3">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-2">
             <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
               <Bell className="w-4 h-4 text-blue-700" />
               <span>Notifications</span>
             </h2>
-            <button
-              type="button"
-              onClick={handleMarkAllRead}
-              className="text-xs font-semibold text-blue-700 hover:underline"
-            >
-              Mark all read
-            </button>
+            {notifications.some((n) => n.is_read === 0) ? (
+              <button
+                type="button"
+                onClick={handleMarkAllRead}
+                className="min-h-[36px] px-2.5 rounded-lg text-xs font-semibold text-blue-700 hover:bg-blue-50"
+              >
+                Mark all read
+              </button>
+            ) : (
+              <span className="text-[11px] font-medium text-slate-400">All caught up</span>
+            )}
           </div>
-          <div className="divide-y divide-slate-100 max-h-64 overflow-y-auto">
-            {notifications.map((n) => (
-              <div key={n.id} className="py-3 text-xs">
-                <div className="flex items-center justify-between gap-2">
-                  <strong className={n.is_read ? 'text-slate-700' : 'text-blue-700'}>{n.title}</strong>
-                  <span className="text-slate-400">{formatDateTime(n.created_at)}</span>
-                </div>
-                <p className="text-slate-600 mt-1">{n.message}</p>
-              </div>
-            ))}
+          <div className="divide-y divide-slate-100 max-h-72 overflow-y-auto -mx-2 px-2">
+            {notifications.length === 0 ? (
+              <p className="py-6 text-xs text-slate-500 text-center">No notifications yet.</p>
+            ) : (
+              notifications.map((n) => (
+                <button
+                  key={n.id}
+                  type="button"
+                  onClick={() => {
+                    if (n.is_read === 0) {
+                      setNotifications((prev) =>
+                        prev.map((item) => (item.id === n.id ? { ...item, is_read: 1 } : item))
+                      );
+                    }
+                    onOpenNotification?.(n);
+                  }}
+                  className={`w-full py-3 px-2.5 rounded-xl text-left text-xs transition-colors hover:bg-slate-50 ${
+                    n.is_read === 0 ? 'bg-blue-50/40' : ''
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <strong className={n.is_read ? 'text-slate-700' : 'text-blue-700'}>{n.title}</strong>
+                    <span className="text-slate-400 shrink-0 tabular-nums">{formatDateTime(n.created_at)}</span>
+                  </div>
+                  <p className="text-slate-600 mt-1 leading-relaxed">{n.message}</p>
+                </button>
+              ))
+            )}
           </div>
         </section>
 

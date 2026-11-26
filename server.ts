@@ -197,8 +197,11 @@ app.post(
       ]);
       await tx.execute(
         `INSERT INTO notifications (user_id, title, message, category, link_path)
-         VALUES (?, 'Welcome to Vantage Reach', 'Submit your first YouTube video to capture an immutable baseline snapshot and run Gemini SEO intelligence.', 'system', '/submit')`,
-        [uid]
+         VALUES (?, 'Welcome to Vantage Reach', ?, 'system', '/submit')`,
+        [
+          uid,
+          `Welcome to Vantage Reach, ${trimmedName || 'Creator'}! We are excited to help grow your channel globally. Submit your first YouTube video to lock in a live baseline snapshot, compare search competitors, and unlock Gemini SEO insights.`,
+        ]
       );
       return uid;
     });
@@ -448,10 +451,25 @@ app.get(
   '/api/notifications',
   requireAuth,
   asyncHandler(async (req: AuthRequest, res) => {
-    const rows = await db.queryAll(
+    let rows = await db.queryAll(
       `SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT 40`,
       [req.user!.id]
     );
+    if (rows.length === 0 && !req.user!.isAdmin) {
+      const displayName = (req.user!.fullName || '').trim() || 'Creator';
+      await db.execute(
+        `INSERT INTO notifications (user_id, title, message, category, link_path)
+         VALUES (?, 'Welcome to Vantage Reach', ?, 'system', '/submit')`,
+        [
+          req.user!.id,
+          `Welcome to Vantage Reach, ${displayName}! We are excited to help grow your channel globally. Submit your first YouTube video to lock in a live baseline snapshot, compare search competitors, and unlock Gemini SEO insights.`,
+        ]
+      );
+      rows = await db.queryAll(
+        `SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT 40`,
+        [req.user!.id]
+      );
+    }
     res.json({ notifications: rows });
   })
 );
@@ -2209,21 +2227,25 @@ app.post(
   requireAuth,
   requireAdmin('notifications:manage'),
   asyncHandler(async (req: AuthRequest, res) => {
-    const { title, message, targetUserId } = req.body || {};
+    const { title, message, targetUserId, linkPath } = req.body || {};
     if (!String(title || '').trim() || !String(message || '').trim()) {
       return res.status(400).json({ error: 'Title and message are required.' });
     }
     const cleanTitle = String(title).trim();
     const cleanMsg = String(message).trim();
-    const insSql = `INSERT INTO notifications (user_id, title, message, category, link_path) VALUES (?, ?, ?, 'announcement', '/')`;
+    const cleanLink = String(linkPath || '/').trim() || '/';
+    const insSql = `INSERT INTO notifications (user_id, title, message, category, link_path) VALUES (?, ?, ?, 'announcement', ?)`;
 
+    let sentCount = 0;
     if (targetUserId) {
-      await db.execute(insSql, [Number(targetUserId), cleanTitle, cleanMsg]);
+      await db.execute(insSql, [Number(targetUserId), cleanTitle, cleanMsg, cleanLink]);
+      sentCount = 1;
     } else {
       const users = await db.queryAll<{ id: number }>(`SELECT id FROM users WHERE status = 'active'`);
       await db.transaction(async (tx) => {
         for (const u of users) {
-          await tx.execute(insSql, [Number(u.id), cleanTitle, cleanMsg]);
+          await tx.execute(insSql, [Number(u.id), cleanTitle, cleanMsg, cleanLink]);
+          sentCount++;
         }
       });
     }
@@ -2233,10 +2255,10 @@ app.post(
       'notification_broadcast',
       'notification',
       targetUserId || 'all',
-      { title: cleanTitle },
+      { title: cleanTitle, sentCount },
       req.ip || ''
     );
-    res.json({ ok: true });
+    res.json({ ok: true, sentCount });
   })
 );
 

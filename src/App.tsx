@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
+  ArrowRight,
   BarChart2,
   BarChart3,
   Bell,
@@ -33,7 +34,16 @@ import { SeoAndCompetitorsView } from './components/SeoAndCompetitorsView';
 import { SubmitVideoView } from './components/SubmitVideoView';
 import { VideoIntelligenceView } from './components/VideoIntelligenceView';
 import { usePWAInstall } from './hooks/usePWAInstall';
-import { ApiError, api, formatDate, getAuthToken, onUnauthorized, setAuthToken } from './lib/api';
+import {
+  ApiError,
+  api,
+  formatDate,
+  formatDateTime,
+  formatStatusLabel,
+  getAuthToken,
+  onUnauthorized,
+  setAuthToken,
+} from './lib/api';
 import { initVisitorTracker, trackScreenView } from './lib/visitorTracker';
 import type { NotificationRecord, UserSession } from './types';
 
@@ -69,8 +79,10 @@ export default function App() {
 
   const [notifications, setNotifications] = useState<NotificationRecord[]>([]);
   const [notifOpen, setNotifOpen] = useState(false);
+  const [selectedNotification, setSelectedNotification] = useState<NotificationRecord | null>(null);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const notifRef = useRef<HTMLDivElement>(null);
+  const mobileNotifSheetRef = useRef<HTMLDivElement>(null);
   const profileRef = useRef<HTMLDivElement>(null);
 
   const fetchNotifications = useCallback(async () => {
@@ -220,16 +232,40 @@ export default function App() {
   }, [activeTab, user?.id, user?.isAdmin]);
 
   useEffect(() => {
+    if (!user || user.isAdmin) return;
+    const poll = window.setInterval(() => {
+      if (document.visibilityState === 'visible' && navigator.onLine) {
+        void fetchNotifications();
+      }
+    }, 25_000);
+    return () => window.clearInterval(poll);
+  }, [user?.id, user?.isAdmin, fetchNotifications]);
+
+  useEffect(() => {
     const handleOutside = (e: MouseEvent) => {
-      if (notifRef.current && !notifRef.current.contains(e.target as Node)) {
+      const target = e.target as Node;
+      const insideBell = notifRef.current?.contains(target);
+      const insideMobileSheet = mobileNotifSheetRef.current?.contains(target);
+      if (!insideBell && !insideMobileSheet) {
         setNotifOpen(false);
       }
-      if (profileRef.current && !profileRef.current.contains(e.target as Node)) {
+      if (profileRef.current && !profileRef.current.contains(target)) {
+        setProfileMenuOpen(false);
+      }
+    };
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setNotifOpen(false);
+        setSelectedNotification(null);
         setProfileMenuOpen(false);
       }
     };
     document.addEventListener('mousedown', handleOutside);
-    return () => document.removeEventListener('mousedown', handleOutside);
+    window.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('mousedown', handleOutside);
+      window.removeEventListener('keydown', handleEscape);
+    };
   }, []);
 
   const handleNavigate = (tab: string, videoId?: number) => {
@@ -273,25 +309,47 @@ export default function App() {
     try {
       await api.post('/api/notifications/read-all');
       setNotifications((prev) => prev.map((n) => ({ ...n, is_read: 1 })));
+      window.dispatchEvent(new CustomEvent('vantage:notifications-sync'));
     } catch {
       // Ignore
     }
   };
 
+  const resolveNotificationDestination = (
+    linkPath?: string | null
+  ): { tab: NavTab; label: string; videoId?: number } | null => {
+    const p = (linkPath || '').trim();
+    if (!p) return null;
+    if (p.includes('submit')) return { tab: 'submit', label: 'Submit a Video' };
+    if (p.includes('campaign')) return { tab: 'campaigns', label: 'View My Campaigns' };
+    if (p.includes('seo')) return { tab: 'seo', label: 'Open SEO & Competitors' };
+    if (p.includes('plan')) return { tab: 'plans', label: 'Explore Plans' };
+    if (p.includes('report')) return { tab: 'reports', label: 'View Reports' };
+    if (p.includes('profile')) return { tab: 'profile', label: 'Open Profile & Settings' };
+    if (p.includes('video')) {
+      const match = p.match(/\/videos\/(\d+)/);
+      return {
+        tab: 'intelligence',
+        label: 'Open Video Intelligence',
+        videoId: match ? Number(match[1]) : undefined,
+      };
+    }
+    if (p === '/') return { tab: 'dashboard', label: 'Go to Dashboard' };
+    return null;
+  };
+
   const handleNotificationClick = async (n: NotificationRecord) => {
+    setNotifOpen(false);
+    setSelectedNotification({ ...n, is_read: 1 });
     if (n.is_read === 0) {
+      setNotifications((prev) => prev.map((item) => (item.id === n.id ? { ...item, is_read: 1 } : item)));
       try {
         await api.post(`/api/notifications/${n.id}/read`);
-        setNotifications((prev) => prev.map((item) => (item.id === n.id ? { ...item, is_read: 1 } : item)));
+        window.dispatchEvent(new CustomEvent('vantage:notifications-sync'));
       } catch {
         // Ignore
       }
     }
-    if (n.link_path?.includes('submit')) handleNavigate('submit');
-    else if (n.link_path?.includes('campaign')) handleNavigate('campaigns');
-    else if (n.link_path?.includes('video')) handleNavigate('intelligence');
-    else if (n.link_path?.includes('profile')) handleNavigate('profile');
-    else setNotifOpen(false);
   };
 
   if (checkingAuth) {
@@ -473,43 +531,50 @@ export default function App() {
               </button>
 
               {notifOpen && (
-                <div className="absolute right-0 mt-2 w-80 max-w-[calc(100vw-2rem)] rounded-2xl bg-white border border-slate-200 shadow-xl z-50 overflow-hidden">
-                  <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
-                    <span className="text-sm font-bold text-slate-900">Notifications</span>
-                    {unreadCount > 0 && (
-                      <button
-                        type="button"
-                        onClick={markAllNotificationsRead}
-                        className="text-xs font-semibold text-[#2563EB] hover:underline inline-flex items-center gap-1"
-                      >
-                        <CheckCheck className="w-3.5 h-3.5" />
-                        <span>Mark all read</span>
-                      </button>
-                    )}
-                  </div>
-                  <div className="max-h-72 overflow-y-auto divide-y divide-slate-100">
-                    {notifications.length === 0 ? (
-                      <p className="p-5 text-xs text-slate-500 text-center">No notifications yet.</p>
-                    ) : (
-                      notifications.slice(0, 8).map((n) => (
+                <>
+                  {/* Desktop Popover */}
+                  <div className="hidden sm:block absolute right-0 mt-2 w-96 rounded-2xl bg-white border border-slate-200 shadow-xl z-50 overflow-hidden">
+                    <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between gap-2">
+                      <span className="text-sm font-bold text-slate-900">Notifications</span>
+                      {unreadCount > 0 ? (
                         <button
-                          key={n.id}
                           type="button"
-                          onClick={() => handleNotificationClick(n)}
-                          className={`w-full px-4 py-3 text-left hover:bg-slate-50 transition-colors ${
-                            n.is_read === 0 ? 'bg-blue-50/40' : ''
-                          }`}
+                          onClick={markAllNotificationsRead}
+                          className="min-h-[32px] px-2.5 rounded-lg text-xs font-semibold text-[#2563EB] hover:bg-blue-50 inline-flex items-center gap-1"
                         >
-                          <div className="flex items-center justify-between gap-2">
-                            <p className="text-xs font-bold text-slate-900 truncate">{n.title}</p>
-                            <span className="text-[11px] text-slate-400 shrink-0">{formatDate(n.created_at)}</span>
-                          </div>
-                          <p className="text-xs text-slate-600 mt-1 line-clamp-2">{n.message}</p>
+                          <CheckCheck className="w-3.5 h-3.5" />
+                          <span>Mark all read</span>
                         </button>
-                      ))
-                    )}
+                      ) : (
+                        <span className="text-[11px] font-medium text-slate-400">All caught up</span>
+                      )}
+                    </div>
+                    <div className="max-h-[60vh] overflow-y-auto divide-y divide-slate-100">
+                      {notifications.length === 0 ? (
+                        <p className="p-6 text-xs text-slate-500 text-center">No notifications yet.</p>
+                      ) : (
+                        notifications.map((n) => (
+                          <button
+                            key={n.id}
+                            type="button"
+                            onClick={() => handleNotificationClick(n)}
+                            className={`w-full px-4 py-3.5 text-left hover:bg-slate-50 transition-colors ${
+                              n.is_read === 0 ? 'bg-blue-50/45' : ''
+                            }`}
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <p className="text-xs font-bold text-slate-900 leading-snug">{n.title}</p>
+                              <span className="text-[11px] text-slate-400 shrink-0 tabular-nums">
+                                {formatDate(n.created_at)}
+                              </span>
+                            </div>
+                            <p className="text-xs text-slate-600 mt-1 line-clamp-2 leading-relaxed">{n.message}</p>
+                          </button>
+                        ))
+                      )}
+                    </div>
                   </div>
-                </div>
+                </>
               )}
             </div>
 
@@ -649,10 +714,164 @@ export default function App() {
             <ReportsView selectedVideoId={selectedVideoId} onSelectVideo={setSelectedVideoId} />
           )}
           {activeTab === 'profile' && (
-            <ProfileView user={user} onLogout={handleLogout} onUserUpdated={refreshMe} />
+            <ProfileView
+              user={user}
+              onLogout={handleLogout}
+              onUserUpdated={refreshMe}
+              onOpenNotification={(n) => void handleNotificationClick(n)}
+            />
           )}
         </main>
       </div>
+
+      {/* Mobile Full-Width Notifications Bottom Sheet */}
+      {notifOpen && (
+        <div className="sm:hidden fixed inset-0 z-50 flex flex-col justify-end">
+          <button
+            type="button"
+            aria-label="Close Notifications"
+            onClick={() => setNotifOpen(false)}
+            className="fixed inset-0 bg-slate-950/45 backdrop-blur-[1px]"
+          />
+          <div
+            ref={mobileNotifSheetRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Notifications"
+            className="relative z-10 w-full max-h-[82vh] bg-white rounded-t-3xl border-t border-slate-200 shadow-2xl flex flex-col pb-safe"
+          >
+            <div className="w-10 h-1.5 bg-slate-300 rounded-full mx-auto mt-3 mb-1 shrink-0" />
+            <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between gap-2 shrink-0">
+              <div className="flex items-center gap-2">
+                <Bell className="w-4 h-4 text-[#2563EB]" />
+                <span className="text-base font-bold text-slate-900">Notifications</span>
+              </div>
+              <div className="flex items-center gap-1">
+                {unreadCount > 0 ? (
+                  <button
+                    type="button"
+                    onClick={markAllNotificationsRead}
+                    className="min-h-[40px] px-3 rounded-xl text-xs font-semibold text-[#2563EB] hover:bg-blue-50 inline-flex items-center gap-1.5 whitespace-nowrap"
+                  >
+                    <CheckCheck className="w-4 h-4" />
+                    <span>Mark all read</span>
+                  </button>
+                ) : (
+                  <span className="text-xs font-medium text-slate-400 px-2">All caught up</span>
+                )}
+                <button
+                  type="button"
+                  aria-label="Close Notifications"
+                  onClick={() => setNotifOpen(false)}
+                  className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl text-slate-500 hover:bg-slate-100"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto divide-y divide-slate-100">
+              {notifications.length === 0 ? (
+                <p className="p-8 text-sm text-slate-500 text-center">No notifications yet.</p>
+              ) : (
+                notifications.map((n) => (
+                  <button
+                    key={n.id}
+                    type="button"
+                    onClick={() => handleNotificationClick(n)}
+                    className={`w-full px-4 py-4 text-left active:bg-slate-100 transition-colors ${
+                      n.is_read === 0 ? 'bg-blue-50/45' : ''
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <p className="text-sm font-bold text-slate-900 leading-snug">{n.title}</p>
+                      <span className="text-[11px] text-slate-400 shrink-0 tabular-nums pt-0.5">
+                        {formatDate(n.created_at)}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-600 mt-1.5 leading-relaxed line-clamp-3">{n.message}</p>
+                    <p className="text-[11px] font-semibold text-[#2563EB] mt-2">
+                      {n.is_read === 0 ? 'Unread · Tap to read' : 'Tap to view details'}
+                    </p>
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Responsive Notification Detail Sheet / Modal */}
+      {selectedNotification && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <button
+            type="button"
+            aria-label="Close Notification Details"
+            onClick={() => setSelectedNotification(null)}
+            className="fixed inset-0 bg-slate-950/50 backdrop-blur-[1px]"
+          />
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="notification-detail-title"
+            className="relative z-10 w-full sm:max-w-md bg-white rounded-t-3xl sm:rounded-2xl border border-slate-200 shadow-2xl p-5 sm:p-6 space-y-4 pb-safe"
+          >
+            <div className="sm:hidden w-10 h-1.5 bg-slate-300 rounded-full mx-auto -mt-1 mb-1" />
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-xs font-medium text-slate-500">
+                  {formatStatusLabel(selectedNotification.category || 'system')} ·{' '}
+                  {formatDateTime(selectedNotification.created_at)}
+                </p>
+                <h2 id="notification-detail-title" className="text-lg font-bold text-slate-900 mt-1 leading-snug">
+                  {selectedNotification.title}
+                </h2>
+              </div>
+              <button
+                type="button"
+                aria-label="Close"
+                onClick={() => setSelectedNotification(null)}
+                className="min-h-[44px] min-w-[44px] -mr-2 -mt-1 flex items-center justify-center rounded-xl text-slate-500 hover:bg-slate-100 shrink-0"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="rounded-2xl bg-slate-50 border border-slate-200/80 p-4">
+              <p className="text-sm text-slate-700 leading-relaxed whitespace-pre-line">
+                {selectedNotification.message}
+              </p>
+            </div>
+
+            <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2.5 pt-1">
+              <button
+                type="button"
+                onClick={() => setSelectedNotification(null)}
+                className="min-h-[44px] px-4 rounded-xl border border-slate-200 bg-white text-sm font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                Close
+              </button>
+              {(() => {
+                const dest = resolveNotificationDestination(selectedNotification.link_path);
+                if (!dest) return null;
+                return (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedNotification(null);
+                      handleNavigate(dest.tab, dest.videoId);
+                    }}
+                    className="min-h-[44px] px-5 rounded-xl bg-[#2563EB] hover:bg-[#1D4ED8] text-white text-sm font-semibold inline-flex items-center justify-center gap-2"
+                  >
+                    <span>{dest.label}</span>
+                    <ArrowRight className="w-4 h-4" />
+                  </button>
+                );
+              })()}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Fixed 5-Destination Mobile Bottom Navigation Bar with Centered Circular Submit Button */}
       <nav
