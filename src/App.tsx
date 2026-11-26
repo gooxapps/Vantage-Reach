@@ -22,7 +22,6 @@ import { AdminConsoleView } from './components/AdminConsoleView';
 import { AuthViews } from './components/AuthViews';
 import { BrandSplashScreen, VantageLogo } from './components/BrandMark';
 import { CampaignsView } from './components/CampaignsView';
-import { CreatorVipModal } from './components/CreatorVipModal';
 import { CustomerDashboard } from './components/CustomerDashboard';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import { PackagesAndCheckoutView } from './components/PackagesAndCheckoutView';
@@ -43,7 +42,7 @@ import {
 } from './lib/api';
 import { useSiteConfig } from './lib/siteConfig';
 import { initVisitorTracker, trackScreenView } from './lib/visitorTracker';
-import type { NotificationRecord, UserSession, VideoRecord } from './types';
+import type { NotificationRecord, UserSession } from './types';
 
 type NavTab = 'dashboard' | 'submit' | 'plans' | 'campaigns' | 'reports' | 'profile';
 
@@ -68,7 +67,6 @@ export default function App() {
   const [checkingAuth, setCheckingAuth] = useState(true);
   const [activeTab, setActiveTab] = useState<NavTab>('dashboard');
   const [selectedVideoId, setSelectedVideoId] = useState<number | null>(null);
-  const [vipOfferVideo, setVipOfferVideo] = useState<VideoRecord | null>(null);
   const [paymentBanner, setPaymentBanner] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [paymentSyncSeq, setPaymentSyncSeq] = useState(0);
 
@@ -327,7 +325,7 @@ export default function App() {
   ): { tab: NavTab; label: string; videoId?: number } | null => {
     const p = (linkPath || '').trim();
     if (!p) return null;
-    if (p.includes('submit')) return { tab: 'submit', label: 'Drop Video & Channel' };
+    if (p.includes('submit')) return { tab: 'submit', label: 'Drop Channel or Video' };
     if (p.includes('campaign') || p.includes('video')) return { tab: 'campaigns', label: 'View My Campaigns' };
     if (p.includes('plan') || p.includes('seo')) return { tab: 'plans', label: 'Promote ($1 VIP)' };
     if (p.includes('report')) return { tab: 'reports', label: 'View Reports' };
@@ -421,7 +419,7 @@ export default function App() {
     icon: React.ComponentType<{ className?: string }>;
   }> = [
     { id: 'dashboard', label: 'Dashboard', icon: Home },
-    { id: 'submit', label: 'Drop Video', icon: PlusCircle },
+    { id: 'submit', label: 'Drop Link', icon: PlusCircle },
     { id: 'plans', label: 'Promote ($1 VIP)', icon: Crown },
     { id: 'campaigns', label: 'My Campaigns', icon: Rocket },
     { id: 'reports', label: 'Reports', icon: BarChart3 },
@@ -644,7 +642,7 @@ export default function App() {
                     className="w-full min-h-[40px] px-3 rounded-xl text-left text-xs font-medium text-slate-700 hover:bg-slate-50 flex items-center gap-2.5"
                   >
                     <PlusCircle className="w-4 h-4 text-slate-400" />
-                    <span>Drop Video &amp; Channel</span>
+                    <span>Drop Channel or Video</span>
                   </button>
                   <button
                     type="button"
@@ -717,8 +715,7 @@ export default function App() {
             <SubmitVideoView
               onSubmitted={(video) => {
                 setSelectedVideoId(video.id);
-                setActiveTab('campaigns');
-                setVipOfferVideo(video);
+                handleNavigate('plans', video.id);
               }}
             />
           )}
@@ -726,6 +723,15 @@ export default function App() {
             <PackagesAndCheckoutView
               selectedVideoId={selectedVideoId}
               onSelectVideo={setSelectedVideoId}
+              onPaymentSuccess={() => {
+                setPaymentSyncSeq((n) => n + 1);
+                void refreshMe(false);
+                fetchNotifications();
+                setPaymentBanner({
+                  type: 'success',
+                  text: 'Payment verified! Your promotion is now queued in My Campaigns.',
+                });
+              }}
               onSuccessNavigate={(t) => handleNavigate(t)}
             />
           )}
@@ -743,24 +749,6 @@ export default function App() {
           )}
         </main>
       </div>
-
-      {vipOfferVideo && (
-        <CreatorVipModal
-          video={vipOfferVideo}
-          isAlreadyVip={Boolean(user.isVip)}
-          onClose={() => setVipOfferVideo(null)}
-          onVipActivated={() => {
-            setPaymentSyncSeq((n) => n + 1);
-            void refreshMe(false);
-            fetchNotifications();
-          }}
-          onViewCampaigns={() => {
-            setSelectedVideoId(vipOfferVideo.id);
-            setVipOfferVideo(null);
-            handleNavigate('campaigns');
-          }}
-        />
-      )}
 
       {/* Mobile Full-Width Notifications Bottom Sheet */}
       {notifOpen && (
@@ -958,7 +946,7 @@ export default function App() {
             type="button"
             onClick={() => handleNavigate('submit')}
             aria-current={activeTab === 'submit' ? 'page' : undefined}
-            aria-label="Submit a YouTube Video"
+            aria-label="Drop a YouTube Channel or Video Link"
             className="min-h-[48px] flex flex-col items-center justify-end gap-1 group"
           >
             <span
@@ -973,7 +961,7 @@ export default function App() {
                 activeTab === 'submit' ? 'text-[#2563EB] font-bold' : 'text-slate-500 font-medium'
               }`}
             >
-              Submit
+              Drop Link
             </span>
           </button>
 

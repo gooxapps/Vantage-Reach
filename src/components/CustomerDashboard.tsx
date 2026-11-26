@@ -168,12 +168,12 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({ user, onNa
       onClick: () => onNavigate('campaigns'),
     },
     {
-      label: 'Videos Dropped',
+      label: 'Submitted Links',
       value: totalVideosCount,
       iconBg: 'bg-violet-50 text-violet-600',
       icon: BarChart2,
       filledIcon: false,
-      onClick: () => onNavigate('campaigns'),
+      onClick: () => onNavigate(totalVideosCount > 0 && Number(stats.totalCampaigns ?? 0) === 0 ? 'plans' : 'campaigns'),
     },
     {
       label: 'Available Reports',
@@ -246,7 +246,7 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({ user, onNa
         <span aria-hidden="true" />
         <span className="inline-flex items-center justify-center gap-2.5 whitespace-nowrap">
           <Link2 className="w-5 h-5 shrink-0" />
-          <span>Drop Video &amp; Channel Link</span>
+          <span>Drop Channel or Video Link</span>
         </span>
         <ChevronRight className="w-5 h-5 justify-self-end text-white/90 shrink-0" />
       </button>
@@ -298,7 +298,7 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({ user, onNa
           <div className="rounded-xl bg-slate-50 border border-slate-100 p-5 text-center">
             <p className="text-sm font-semibold text-slate-800">No promotion campaigns yet</p>
             <p className="text-xs text-slate-500 mt-1 max-w-md mx-auto">
-              Drop your YouTube video link and channel link, then pay the $1 membership fee so our team can promote your video on our platform.
+              Drop your YouTube channel link or video link, then pay $1 to promote it on our platform.
             </p>
             <div className="mt-4 flex flex-wrap items-center justify-center gap-2.5">
               <button
@@ -306,7 +306,7 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({ user, onNa
                 onClick={() => onNavigate('submit')}
                 className="min-h-[44px] px-4 py-2 rounded-xl bg-[#2563EB] text-white text-xs font-semibold hover:bg-[#1D4ED8]"
               >
-                Drop a Video
+                Drop Link
               </button>
               <button
                 type="button"
@@ -371,8 +371,8 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({ user, onNa
             >
               <Rocket className="w-5 h-5 text-[#2563EB]" />
               <div>
-                <p className="text-xs sm:text-sm font-bold text-slate-900">Drop Links</p>
-                <p className="text-[11px] text-slate-500 mt-0.5">Video &amp; channel link</p>
+                <p className="text-xs sm:text-sm font-bold text-slate-900">Drop Link</p>
+                <p className="text-[11px] text-slate-500 mt-0.5">Channel or video link</p>
               </div>
             </button>
 
@@ -392,22 +392,22 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({ user, onNa
 
         <section className="lg:col-span-7 rounded-2xl bg-white border border-slate-200/90 shadow-[0_2px_10px_rgba(15,23,42,0.04)] p-4 sm:p-5">
           <div className="flex items-center justify-between gap-3 mb-3">
-            <h2 className="text-sm font-bold text-slate-900">Recently Dropped Videos</h2>
+            <h2 className="text-sm font-bold text-slate-900">Recently Submitted Links</h2>
             <button
               type="button"
               onClick={() => onNavigate('plans')}
               className="text-xs font-semibold text-[#2563EB] hover:underline whitespace-nowrap"
             >
-              Promote Video
+              Promote
             </button>
           </div>
 
           {recentVideos.length === 0 ? (
             <div className="rounded-xl bg-slate-50 border border-slate-100 p-4 flex items-center justify-between gap-3">
               <div className="min-w-0">
-                <p className="text-xs font-semibold text-slate-800">No videos dropped yet</p>
+                <p className="text-xs font-semibold text-slate-800">No links dropped yet</p>
                 <p className="text-[11px] text-slate-500 mt-0.5">
-                  Paste your video link and channel link to start your $1 promotion.
+                  Paste your channel link or video link to start your $1 promotion.
                 </p>
               </div>
               <button

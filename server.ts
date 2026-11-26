@@ -33,9 +33,11 @@ import {
   type PaymentProviderName,
 } from './server/payments.ts';
 import {
+  buildChannelSubmissionDetails,
   extractYouTubeVideoId,
   fetchYouTubeSubmissionDetails,
   fetchYouTubeVideoDetails,
+  parseFlexibleYouTubeLink,
   searchYouTubeCompetitors,
   validateYouTubeChannelUrl,
 } from './server/youtube.ts';
@@ -899,29 +901,33 @@ app.post(
   requireAuth,
   asyncHandler(async (req: AuthRequest, res) => {
     try {
-      const { url, channelUrl, title } = req.body || {};
-      const parsed = extractYouTubeVideoId(String(url || ''));
-      if (!parsed.valid || !parsed.videoId) {
-        return res.status(400).json({
-          error: parsed.error || 'Invalid YouTube link.',
-          code: parsed.errorCode || 'INVALID_URL',
+      const { link, url, channelUrl, title } = req.body || {};
+      const primaryRaw = String(link || url || channelUrl || '').trim();
+      const parsed = parseFlexibleYouTubeLink(primaryRaw);
+      if (!parsed.valid) {
+        return res.status(400).json({ error: parsed.error, code: 'INVALID_URL' });
+      }
+      if (parsed.kind === 'channel') {
+        const details = buildChannelSubmissionDetails({
+          uniqueKey: parsed.uniqueKey,
+          channelUrl: parsed.canonicalUrl,
+          channelNameGuess: parsed.channelNameGuess,
+          customTitle: typeof title === 'string' ? title : undefined,
         });
+        return res.json({ preview: details });
       }
       const chCheck = channelUrl ? validateYouTubeChannelUrl(String(channelUrl)) : null;
-      if (chCheck && !chCheck.valid) {
-        return res.status(400).json({ error: chCheck.error || 'Invalid YouTube channel link.', code: 'INVALID_URL' });
-      }
       const details = await fetchYouTubeSubmissionDetails({
         videoId: parsed.videoId,
-        channelUrl: chCheck?.canonicalUrl || undefined,
-        channelNameGuess: chCheck?.channelNameGuess || undefined,
+        channelUrl: chCheck?.valid && chCheck.canonicalUrl ? chCheck.canonicalUrl : undefined,
+        channelNameGuess: chCheck?.valid ? chCheck.channelNameGuess : undefined,
         customTitle: typeof title === 'string' ? title : undefined,
       });
       res.json({ preview: details });
     } catch (err: any) {
       const status = typeof err.status === 'number' ? err.status : 400;
       res.status(status).json({
-        error: err.message || 'Unable to detect YouTube video details.',
+        error: err.message || 'Unable to parse YouTube link.',
         code: err.code || 'DETECTION_FAILED',
       });
     }
@@ -933,57 +939,85 @@ app.post(
   requireAuth,
   asyncHandler(async (req: AuthRequest, res) => {
     try {
-      const { url, channelUrl, title } = req.body || {};
-      const parsed = extractYouTubeVideoId(String(url || ''));
-      if (!parsed.valid || !parsed.videoId) {
-        return res.status(400).json({
-          error: parsed.error || 'Invalid YouTube link.',
-          code: parsed.errorCode || 'INVALID_URL',
-        });
-      }
-
-      const chCheck = validateYouTubeChannelUrl(String(channelUrl || ''));
-      if (!chCheck.valid || !chCheck.canonicalUrl) {
-        return res.status(400).json({
-          error: chCheck.error || 'Please paste a valid YouTube channel link.',
-          code: 'INVALID_CHANNEL_URL',
-        });
-      }
-
+      const { link, url, channelUrl, title } = req.body || {};
       const customTitle = typeof title === 'string' ? title.trim().slice(0, 180) : '';
+
+      let videoId: string | null = null;
+      let resolvedChannelUrl: string | undefined;
+      let resolvedChannelName = '';
+      let uniqueKey = '';
+
+      const rawCandidates = [link, url, channelUrl]
+        .map((v) => String(v || '').trim())
+        .filter(Boolean);
+
+      if (rawCandidates.length === 0) {
+        return res.status(400).json({
+          error: 'Please paste a YouTube channel link or video link.',
+          code: 'INVALID_URL',
+        });
+      }
+
+      for (const candidate of rawCandidates) {
+        const parsed = parseFlexibleYouTubeLink(candidate);
+        if (!parsed.valid) {
+          return res.status(400).json({ error: parsed.error, code: 'INVALID_URL' });
+        }
+        if (parsed.kind === 'video' && !videoId) {
+          videoId = parsed.videoId;
+          uniqueKey = parsed.videoId;
+        } else if (parsed.kind === 'channel') {
+          resolvedChannelUrl = parsed.canonicalUrl;
+          resolvedChannelName = parsed.channelNameGuess;
+          if (!uniqueKey) uniqueKey = parsed.uniqueKey;
+        }
+      }
+
+      if (!uniqueKey) {
+        return res.status(400).json({
+          error: 'Please paste a valid YouTube channel link or video link.',
+          code: 'INVALID_URL',
+        });
+      }
 
       const existing = await db.queryOne<Record<string, any>>(
         `SELECT * FROM videos WHERE user_id = ? AND youtube_video_id = ?`,
-        [req.user!.id, parsed.videoId]
+        [req.user!.id, uniqueKey]
       );
 
       if (existing) {
         await db.execute(
           `UPDATE videos
-           SET channel_url = ?,
+           SET channel_url = CASE WHEN ? != '' THEN ? ELSE channel_url END,
                title = CASE WHEN ? != '' THEN ? ELSE title END,
                updated_at = ${sqlNow()}
            WHERE id = ?`,
-          [chCheck.canonicalUrl, customTitle, customTitle, Number(existing.id)]
+          [resolvedChannelUrl || '', resolvedChannelUrl || '', customTitle, customTitle, Number(existing.id)]
         );
         const refreshed = await db.queryOne<Record<string, any>>(`SELECT * FROM videos WHERE id = ?`, [
           Number(existing.id),
         ]);
-        return res.status(409).json({
-          error: 'This video link is already saved on your account. You can promote it now with $1 membership.',
-          existingVideoId: Number(existing.id),
-          existingVideo: normalizeVideoRow(refreshed),
+        return res.status(200).json({
+          video: normalizeVideoRow(refreshed),
+          alreadySaved: true,
         });
       }
 
-      const details = await fetchYouTubeSubmissionDetails({
-        videoId: parsed.videoId,
-        channelUrl: chCheck.canonicalUrl,
-        channelNameGuess: chCheck.channelNameGuess,
-        customTitle: customTitle || undefined,
-      });
+      const details = videoId
+        ? await fetchYouTubeSubmissionDetails({
+            videoId,
+            channelUrl: resolvedChannelUrl,
+            channelNameGuess: resolvedChannelName || undefined,
+            customTitle: customTitle || undefined,
+          })
+        : buildChannelSubmissionDetails({
+            uniqueKey,
+            channelUrl: resolvedChannelUrl!,
+            channelNameGuess: resolvedChannelName || 'YouTube Channel',
+            customTitle: customTitle || undefined,
+          });
 
-      const videoId = await db.transaction(async (tx) => {
+      const insertedId = await db.transaction(async (tx) => {
         const newVideoId = await tx.insert(
           `INSERT INTO videos (
              user_id, youtube_video_id, url, title, description, channel_id, channel_name, channel_url,
@@ -998,7 +1032,7 @@ app.post(
             details.description,
             details.channelId,
             details.channelName,
-            details.channelUrl || chCheck.canonicalUrl,
+            details.channelUrl || resolvedChannelUrl || '',
             details.thumbnailUrl,
             details.duration,
             details.publishedAt,
@@ -1032,23 +1066,23 @@ app.post(
 
         await tx.execute(
           `INSERT INTO notifications (user_id, title, message, category, link_path)
-           VALUES (?, 'Video & Channel Link Submitted', ?, 'video', ?)`,
+           VALUES (?, 'Promotion Link Saved', ?, 'video', ?)`,
           [
             req.user!.id,
-            `Your video link and channel link (${chCheck.canonicalUrl}) are saved and ready to promote.`,
-            '/campaigns',
+            `Your YouTube link (${details.channelUrl || details.url}) is saved and ready to promote.`,
+            '/plans',
           ]
         );
 
         return newVideoId;
       });
 
-      const saved = await db.queryOne<Record<string, any>>(`SELECT * FROM videos WHERE id = ?`, [videoId]);
+      const saved = await db.queryOne<Record<string, any>>(`SELECT * FROM videos WHERE id = ?`, [insertedId]);
       res.status(201).json({ video: normalizeVideoRow(saved), apiNotice: details.apiNotice });
     } catch (err: any) {
       const status = typeof err.status === 'number' ? err.status : 400;
       res.status(status).json({
-        error: err.message || 'Failed to submit YouTube video and channel links.',
+        error: err.message || 'Failed to save your YouTube link.',
         code: err.code || 'SUBMISSION_FAILED',
       });
     }
@@ -1598,8 +1632,7 @@ app.post(
 
         const appUrl = getAppBaseUrl(req);
         const siteCfg = await getPublicSiteConfig();
-        const isVipPkg = pkg.code === 'vip_membership' || String(pkg.code || '').startsWith('vip_');
-        const returnTab = isVipPkg ? 'intelligence' : 'campaigns';
+        const returnTab = 'campaigns';
         const init = await initializePayment({
           userId: req.user!.id,
           email: req.user!.email,

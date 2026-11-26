@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { db } from './db.ts';
 
 export interface YouTubeVideoDetails {
@@ -217,6 +218,70 @@ export function validateYouTubeChannelUrl(rawUrl: string): {
     valid: true,
     canonicalUrl: `https://www.youtube.com${canonicalPath}`,
     channelNameGuess: guess,
+  };
+}
+
+export function parseFlexibleYouTubeLink(rawInput: string):
+  | { valid: true; kind: 'video'; videoId: string; canonicalUrl: string }
+  | { valid: true; kind: 'channel'; canonicalUrl: string; channelNameGuess: string; uniqueKey: string }
+  | { valid: false; error: string } {
+  const trimmed = rawInput.trim();
+  if (!trimmed) {
+    return { valid: false, error: 'Please paste a YouTube channel link or video link.' };
+  }
+
+  const videoCheck = extractYouTubeVideoId(trimmed);
+  if (videoCheck.valid && videoCheck.videoId && videoCheck.canonicalUrl) {
+    return {
+      valid: true,
+      kind: 'video',
+      videoId: videoCheck.videoId,
+      canonicalUrl: videoCheck.canonicalUrl,
+    };
+  }
+
+  const chCheck = validateYouTubeChannelUrl(trimmed);
+  if (chCheck.valid && chCheck.canonicalUrl) {
+    const hash = crypto.createHash('sha256').update(chCheck.canonicalUrl.toLowerCase()).digest('hex').slice(0, 16);
+    return {
+      valid: true,
+      kind: 'channel',
+      canonicalUrl: chCheck.canonicalUrl,
+      channelNameGuess: chCheck.channelNameGuess,
+      uniqueKey: `ch:${hash}`,
+    };
+  }
+
+  return {
+    valid: false,
+    error: 'Please paste a valid YouTube channel link (e.g. youtube.com/@yourchannel) or YouTube video link.',
+  };
+}
+
+export function buildChannelSubmissionDetails(params: {
+  uniqueKey: string;
+  channelUrl: string;
+  channelNameGuess: string;
+  customTitle?: string;
+}): YouTubeVideoDetails {
+  const label = params.customTitle?.trim() || `${params.channelNameGuess} (YouTube Channel)`;
+  return {
+    youtubeVideoId: params.uniqueKey,
+    url: params.channelUrl,
+    title: label,
+    description: '',
+    channelId: '',
+    channelName: params.channelNameGuess || 'YouTube Channel',
+    channelUrl: params.channelUrl,
+    thumbnailUrl: '',
+    duration: '',
+    publishedAt: '',
+    viewCount: null,
+    likeCount: null,
+    commentCount: null,
+    subscriberCount: null,
+    subscribersHidden: false,
+    statsSource: 'direct_submission',
   };
 }
 

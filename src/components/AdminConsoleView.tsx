@@ -570,16 +570,19 @@ export const AdminConsoleView: React.FC<{
                 <tr key={v.id}>
                   <td className="py-3 pr-4 max-w-xs">
                     <p className="font-semibold text-slate-900 truncate">{v.title}</p>
-                    {typeof v.url === 'string' && v.url.startsWith('https://') && (
-                      <a
-                        href={v.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-[11px] text-blue-700 hover:underline truncate block mt-0.5"
-                      >
-                        {v.url}
-                      </a>
-                    )}
+                    {typeof v.url === 'string' &&
+                      v.url.startsWith('https://') &&
+                      !String(v.youtube_video_id || '').startsWith('ch:') &&
+                      v.url !== v.channel_url && (
+                        <a
+                          href={v.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-[11px] text-blue-700 hover:underline truncate block mt-0.5"
+                        >
+                          {v.url}
+                        </a>
+                      )}
                   </td>
                   <td className="py-3 pr-4 max-w-xs">
                     {typeof v.channel_url === 'string' && v.channel_url.startsWith('https://') ? (
@@ -614,16 +617,19 @@ export const AdminConsoleView: React.FC<{
                 </p>
                 <p className="text-sm font-bold text-slate-900 truncate">{c.video_title || c.title}</p>
                 <div className="flex flex-wrap items-center gap-3 text-xs pt-0.5">
-                  {typeof c.video_url === 'string' && c.video_url.startsWith('https://') && (
-                    <a
-                      href={c.video_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-blue-700 hover:underline font-medium truncate max-w-xs"
-                    >
-                      Video: {c.video_url}
-                    </a>
-                  )}
+                  {typeof c.video_url === 'string' &&
+                    c.video_url.startsWith('https://') &&
+                    !String(c.youtube_video_id || '').startsWith('ch:') &&
+                    c.video_url !== c.channel_url && (
+                      <a
+                        href={c.video_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-700 hover:underline font-medium truncate max-w-xs"
+                      >
+                        Video: {c.video_url}
+                      </a>
+                    )}
                   {typeof c.channel_url === 'string' && c.channel_url.startsWith('https://') && (
                     <a
                       href={c.channel_url}

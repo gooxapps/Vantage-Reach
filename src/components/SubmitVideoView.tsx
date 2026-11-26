@@ -27,6 +27,10 @@ interface ValidationErrorState {
   existingVideo?: VideoRecord;
 }
 
+type DetectedLink =
+  | { kind: 'video'; videoId: string; canonicalUrl: string }
+  | { kind: 'channel'; canonicalUrl: string; label: string };
+
 function extractClientYouTubeId(rawUrl: string): string | null {
   const trimmed = rawUrl.trim();
   if (!trimmed || /\s/.test(trimmed)) return null;
@@ -56,71 +60,95 @@ function extractClientYouTubeId(rawUrl: string): string | null {
   return videoId && /^[a-zA-Z0-9_-]{11}$/.test(videoId) ? videoId : null;
 }
 
-function validateClientChannelUrl(rawUrl: string): string | null {
-  const trimmed = rawUrl.trim();
-  if (!trimmed) return 'Please paste your YouTube channel link.';
-  if (/^@[a-zA-Z0-9._-]{2,60}$/.test(trimmed)) return null;
-  if (/\s/.test(trimmed)) return 'Channel link cannot contain spaces.';
+function detectClientYouTubeLink(rawInput: string): DetectedLink | null {
+  const trimmed = rawInput.trim();
+  if (!trimmed) return null;
+
+  const videoId = extractClientYouTubeId(trimmed);
+  if (videoId) {
+    return {
+      kind: 'video',
+      videoId,
+      canonicalUrl: `https://www.youtube.com/watch?v=${videoId}`,
+    };
+  }
+
+  if (/^@[a-zA-Z0-9._-]{2,60}$/.test(trimmed)) {
+    return {
+      kind: 'channel',
+      canonicalUrl: `https://www.youtube.com/${trimmed}`,
+      label: trimmed,
+    };
+  }
+
+  if (/\s/.test(trimmed)) return null;
+
   let parsed: URL;
   try {
     parsed = new URL(
       trimmed.startsWith('http://') || trimmed.startsWith('https://') ? trimmed : `https://${trimmed}`
     );
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return 'Use a valid http/https YouTube channel link.';
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
   } catch {
-    return 'Please enter a valid YouTube channel link (for example, https://www.youtube.com/@yourchannel).';
+    return null;
   }
+
   const host = parsed.hostname.toLowerCase().replace(/^www\./, '').replace(/^m\./, '');
-  if (host !== 'youtube.com') {
-    return 'Channel link must be a youtube.com URL (e.g. https://www.youtube.com/@yourchannel).';
-  }
+  if (host !== 'youtube.com') return null;
+
   const segments = parsed.pathname.replace(/\/+$/, '').split('/').filter(Boolean);
-  if (segments.length === 0) {
-    return 'Please include your full YouTube channel path (e.g. youtube.com/@yourchannel).';
-  }
+  if (segments.length === 0) return null;
+
   const first = segments[0];
   const isHandle = first.startsWith('@') && first.length >= 3;
   const isChannelPath = (first === 'channel' || first === 'c' || first === 'user') && Boolean(segments[1]);
   const isCustomSlug =
-    segments.length === 1 && !['watch', 'shorts', 'embed', 'live', 'playlist', 'feed', 'results'].includes(first.toLowerCase());
-  if (!isHandle && !isChannelPath && !isCustomSlug) {
-    return 'Please paste your YouTube channel link (not a video link).';
-  }
-  return null;
+    segments.length === 1 &&
+    !['watch', 'shorts', 'embed', 'live', 'playlist', 'feed', 'results'].includes(first.toLowerCase());
+
+  if (!isHandle && !isChannelPath && !isCustomSlug) return null;
+
+  const canonicalPath = isHandle
+    ? `/${first}`
+    : isChannelPath
+      ? `/${first}/${segments[1]}`
+      : `/${first}`;
+
+  return {
+    kind: 'channel',
+    canonicalUrl: `https://www.youtube.com${canonicalPath}`,
+    label: isHandle ? first : segments[1] || first,
+  };
 }
 
 export const SubmitVideoView: React.FC<SubmitVideoViewProps> = ({ onSubmitted }) => {
-  const [url, setUrl] = useState('');
-  const [channelUrl, setChannelUrl] = useState('');
+  const [link, setLink] = useState('');
   const [customTitle, setCustomTitle] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [pasteHint, setPasteHint] = useState('');
   const [errorState, setErrorState] = useState<ValidationErrorState | null>(null);
-  const videoInputRef = useRef<HTMLInputElement>(null);
-  const channelInputRef = useRef<HTMLInputElement>(null);
+  const linkInputRef = useRef<HTMLInputElement>(null);
 
-  const detectedVideoId = useMemo(() => extractClientYouTubeId(url), [url]);
+  const detected = useMemo(() => detectClientYouTubeLink(link), [link]);
 
-  const handlePaste = async (target: 'video' | 'channel') => {
+  const handlePaste = async () => {
     setPasteHint('');
     setErrorState(null);
     if (navigator.clipboard && typeof navigator.clipboard.readText === 'function') {
       try {
         const text = await navigator.clipboard.readText();
         if (text && text.trim()) {
-          if (target === 'video') setUrl(text.trim());
-          else setChannelUrl(text.trim());
+          setLink(text.trim());
           return;
         }
-        setPasteHint('Clipboard is empty. Copy a YouTube link first or paste directly into the field.');
+        setPasteHint('Clipboard is empty. Copy a YouTube channel or video link first, or paste directly.');
       } catch {
         setPasteHint('Browser blocked clipboard access — tap the field and paste manually.');
       }
     } else {
       setPasteHint('Tap the input field and paste your link.');
     }
-    if (target === 'video') videoInputRef.current?.focus();
-    else channelInputRef.current?.focus();
+    linkInputRef.current?.focus();
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -128,44 +156,32 @@ export const SubmitVideoView: React.FC<SubmitVideoViewProps> = ({ onSubmitted })
     setPasteHint('');
     setErrorState(null);
 
-    if (!detectedVideoId) {
+    if (!detected) {
       setErrorState({
-        title: 'Valid Video Link Required',
-        message: 'Please paste a valid YouTube video link (youtube.com/watch?v=, youtu.be/, or youtube.com/shorts/).',
+        title: 'Valid YouTube Link Required',
+        message:
+          'Please paste either your YouTube channel link (e.g. youtube.com/@yourchannel or @yourchannel) or a YouTube video link.',
       });
-      videoInputRef.current?.focus();
-      return;
-    }
-
-    const chError = validateClientChannelUrl(channelUrl);
-    if (chError) {
-      setErrorState({
-        title: 'Valid Channel Link Required',
-        message: chError,
-      });
-      channelInputRef.current?.focus();
+      linkInputRef.current?.focus();
       return;
     }
 
     setSubmitting(true);
     try {
       const res = await api.post<{ video: VideoRecord }>('/api/videos', {
-        url: url.trim(),
-        channelUrl: channelUrl.trim(),
+        link: link.trim(),
         title: customTitle.trim() || undefined,
       });
       onSubmitted(res.video);
     } catch (err) {
       if (err instanceof ApiError && err.status === 409 && err.data?.existingVideo) {
-        setErrorState({
-          title: 'Video Already Dropped',
-          message: err.message || 'This video is already on your account. You can promote it right now.',
-          existingVideo: err.data.existingVideo as VideoRecord,
-        });
+        onSubmitted(err.data.existingVideo as VideoRecord);
       } else {
         setErrorState({
-          title: 'Could Not Submit Links',
-          message: (err as any)?.message || 'Unable to save your video and channel links. Check both URLs and retry.',
+          title: 'Could Not Save Link',
+          message:
+            (err as any)?.message ||
+            'Unable to save your YouTube link. Please check that it is a valid channel or video link.',
         });
       }
     } finally {
@@ -177,17 +193,17 @@ export const SubmitVideoView: React.FC<SubmitVideoViewProps> = ({ onSubmitted })
     {
       num: '1',
       icon: Link2,
-      text: 'Drop your YouTube video link and channel link.',
+      text: 'Drop your YouTube channel link or video link.',
     },
     {
       num: '2',
       icon: Crown,
-      text: 'Pay the $1 membership fee via Flutterwave.',
+      text: 'Pay the $1 membership fee on the promotion page.',
     },
     {
       num: '3',
       icon: Rocket,
-      text: 'Our team promotes your video on our platform.',
+      text: 'We promote your channel or video on our platform.',
     },
   ];
 
@@ -195,53 +211,53 @@ export const SubmitVideoView: React.FC<SubmitVideoViewProps> = ({ onSubmitted })
     <div className="space-y-4 sm:space-y-5 max-w-3xl mx-auto lg:mx-0">
       <section className="pt-0.5">
         <h1 className="text-[26px] sm:text-3xl font-extrabold text-slate-900 tracking-tight leading-tight">
-          Drop Your Video &amp; Channel Link
+          Drop Your Channel or Video Link
         </h1>
         <p className="text-[15px] text-slate-600 mt-1 leading-snug max-w-2xl">
-          Paste your YouTube video link and channel link below, then pay the $1 membership fee so we can promote your video on our platform.
+          Paste either your YouTube channel link or a video link below, then go straight to the $1 promotion page.
         </p>
       </section>
 
       <section
-        aria-label="Submit Video and Channel Links"
+        aria-label="Submit Channel or Video Link"
         className="rounded-2xl bg-white border border-slate-200/90 shadow-[0_2px_10px_rgba(15,23,42,0.04)] p-4 sm:p-6 space-y-4"
       >
         <form onSubmit={handleSubmit} noValidate className="space-y-4">
-          {/* 1. Video Link */}
+          {/* Unified Channel OR Video Link Input */}
           <div className="space-y-1.5">
             <div className="flex items-center gap-2">
               <Youtube className="w-4 h-4 text-red-600 shrink-0" />
-              <label htmlFor="yt-video-url" className="text-sm font-bold text-slate-900">
-                YouTube Video Link
+              <label htmlFor="yt-promo-link" className="text-sm font-bold text-slate-900">
+                YouTube Channel or Video Link
               </label>
             </div>
             <div className="relative">
               <Link2 className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
               <input
-                ref={videoInputRef}
-                id="yt-video-url"
-                type="url"
+                ref={linkInputRef}
+                id="yt-promo-link"
+                type="text"
                 inputMode="url"
                 required
-                value={url}
+                value={link}
                 onChange={(e) => {
-                  setUrl(e.target.value);
+                  setLink(e.target.value);
                   if (errorState) setErrorState(null);
                   if (pasteHint) setPasteHint('');
                 }}
-                placeholder="https://www.youtube.com/watch?v=..."
+                placeholder="https://www.youtube.com/@yourchannel or https://youtu.be/..."
                 className="w-full min-h-[50px] pl-10 pr-24 rounded-2xl border border-slate-200 bg-slate-50/80 text-sm text-slate-900 placeholder:text-slate-400 focus:bg-white focus:border-[#2563EB] focus:ring-2 focus:ring-blue-100 focus:outline-none transition-all"
               />
               <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
-                {url && (
+                {link && (
                   <button
                     type="button"
                     onClick={() => {
-                      setUrl('');
+                      setLink('');
                       setErrorState(null);
-                      videoInputRef.current?.focus();
+                      linkInputRef.current?.focus();
                     }}
-                    aria-label="Clear video URL"
+                    aria-label="Clear link"
                     className="min-h-[34px] min-w-[34px] rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-200/70 flex items-center justify-center"
                   >
                     <X className="w-4 h-4" />
@@ -249,59 +265,7 @@ export const SubmitVideoView: React.FC<SubmitVideoViewProps> = ({ onSubmitted })
                 )}
                 <button
                   type="button"
-                  onClick={() => handlePaste('video')}
-                  className="min-h-[34px] px-2.5 rounded-xl bg-white border border-slate-200 text-xs font-semibold text-slate-700 hover:border-blue-300 hover:text-[#2563EB] inline-flex items-center gap-1"
-                >
-                  <ClipboardPaste className="w-3.5 h-3.5" />
-                  <span>Paste</span>
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {/* 2. Channel Link */}
-          <div className="space-y-1.5">
-            <div className="flex items-center gap-2">
-              <Tv className="w-4 h-4 text-[#2563EB] shrink-0" />
-              <label htmlFor="yt-channel-url" className="text-sm font-bold text-slate-900">
-                YouTube Channel Link
-              </label>
-            </div>
-            <div className="relative">
-              <Link2 className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-              <input
-                ref={channelInputRef}
-                id="yt-channel-url"
-                type="url"
-                inputMode="url"
-                required
-                value={channelUrl}
-                onChange={(e) => {
-                  setChannelUrl(e.target.value);
-                  if (errorState) setErrorState(null);
-                  if (pasteHint) setPasteHint('');
-                }}
-                placeholder="https://www.youtube.com/@yourchannel"
-                className="w-full min-h-[50px] pl-10 pr-24 rounded-2xl border border-slate-200 bg-slate-50/80 text-sm text-slate-900 placeholder:text-slate-400 focus:bg-white focus:border-[#2563EB] focus:ring-2 focus:ring-blue-100 focus:outline-none transition-all"
-              />
-              <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
-                {channelUrl && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setChannelUrl('');
-                      setErrorState(null);
-                      channelInputRef.current?.focus();
-                    }}
-                    aria-label="Clear channel URL"
-                    className="min-h-[34px] min-w-[34px] rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-200/70 flex items-center justify-center"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => handlePaste('channel')}
+                  onClick={handlePaste}
                   className="min-h-[34px] px-2.5 rounded-xl bg-white border border-slate-200 text-xs font-semibold text-slate-700 hover:border-blue-300 hover:text-[#2563EB] inline-flex items-center gap-1"
                 >
                   <ClipboardPaste className="w-3.5 h-3.5" />
@@ -310,32 +274,40 @@ export const SubmitVideoView: React.FC<SubmitVideoViewProps> = ({ onSubmitted })
               </div>
             </div>
             <p className="text-[11px] text-slate-500">
-              Supports youtube.com/@handle, youtube.com/channel/..., or youtube.com/c/...
+              Channel link alone is fine — a video link is completely optional. Supports @handle, youtube.com/channel/..., or any YouTube video link.
             </p>
           </div>
 
-          {/* 3. Optional Video Title */}
-          <div className="space-y-1.5">
-            <label htmlFor="yt-video-title" className="block text-xs font-semibold text-slate-700">
-              Video Title (Optional)
-            </label>
-            <input
-              id="yt-video-title"
-              type="text"
-              maxLength={180}
-              value={customTitle}
-              onChange={(e) => setCustomTitle(e.target.value)}
-              placeholder="Give your video a label (optional)"
-              className="w-full min-h-[46px] px-3.5 rounded-2xl border border-slate-200 bg-slate-50/80 text-sm text-slate-900 placeholder:text-slate-400 focus:bg-white focus:border-[#2563EB] focus:outline-none"
-            />
-          </div>
+          {/* Live Link Detection Preview */}
+          {detected?.kind === 'channel' && (
+            <div className="rounded-2xl border border-blue-200/80 bg-blue-50/40 p-3.5 flex items-center gap-3">
+              <div className="w-12 h-12 rounded-xl bg-[#2563EB] text-white flex items-center justify-center shrink-0">
+                <Tv className="w-6 h-6" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-bold text-[#2563EB] flex items-center gap-1">
+                  <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                  <span>YouTube Channel Link Ready</span>
+                </p>
+                <p className="text-xs font-semibold text-slate-900 truncate mt-0.5">{detected.label}</p>
+                <a
+                  href={detected.canonicalUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-600 hover:text-[#2563EB] mt-0.5 truncate max-w-full"
+                >
+                  <span className="truncate">{detected.canonicalUrl}</span>
+                  <ExternalLink className="w-3 h-3 shrink-0" />
+                </a>
+              </div>
+            </div>
+          )}
 
-          {/* Live Video Preview Thumbnail */}
-          {detectedVideoId && (
+          {detected?.kind === 'video' && (
             <div className="rounded-2xl border border-blue-200/80 bg-blue-50/40 p-3 flex items-center gap-3">
               <div className="w-24 aspect-video rounded-xl overflow-hidden bg-slate-200 shrink-0">
                 <ThumbnailImage
-                  src={`https://i.ytimg.com/vi/${detectedVideoId}/hqdefault.jpg`}
+                  src={`https://i.ytimg.com/vi/${detected.videoId}/hqdefault.jpg`}
                   alt="YouTube video preview"
                 />
               </div>
@@ -345,10 +317,10 @@ export const SubmitVideoView: React.FC<SubmitVideoViewProps> = ({ onSubmitted })
                   <span>YouTube Video Link Ready</span>
                 </p>
                 <p className="text-[11px] text-slate-600 font-mono truncate mt-0.5">
-                  https://www.youtube.com/watch?v={detectedVideoId}
+                  {detected.canonicalUrl}
                 </p>
                 <a
-                  href={`https://www.youtube.com/watch?v=${detectedVideoId}`}
+                  href={detected.canonicalUrl}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-700 hover:text-[#2563EB] mt-1"
@@ -359,6 +331,22 @@ export const SubmitVideoView: React.FC<SubmitVideoViewProps> = ({ onSubmitted })
               </div>
             </div>
           )}
+
+          {/* Optional Label / Title */}
+          <div className="space-y-1.5">
+            <label htmlFor="yt-video-title" className="block text-xs font-semibold text-slate-700">
+              Title or Label (Optional)
+            </label>
+            <input
+              id="yt-video-title"
+              type="text"
+              maxLength={180}
+              value={customTitle}
+              onChange={(e) => setCustomTitle(e.target.value)}
+              placeholder="Give your channel or video a name (optional)"
+              className="w-full min-h-[46px] px-3.5 rounded-2xl border border-slate-200 bg-slate-50/80 text-sm text-slate-900 placeholder:text-slate-400 focus:bg-white focus:border-[#2563EB] focus:outline-none"
+            />
+          </div>
 
           {pasteHint && <p className="text-xs text-slate-500">{pasteHint}</p>}
 
@@ -371,16 +359,6 @@ export const SubmitVideoView: React.FC<SubmitVideoViewProps> = ({ onSubmitted })
               <div className="min-w-0 flex-1 space-y-1">
                 <p className="text-xs sm:text-sm font-bold">{errorState.title}</p>
                 <p className="text-xs leading-relaxed opacity-90">{errorState.message}</p>
-                {errorState.existingVideo && (
-                  <button
-                    type="button"
-                    onClick={() => onSubmitted(errorState.existingVideo!)}
-                    className="mt-2 min-h-[40px] px-4 rounded-xl bg-[#2563EB] text-white text-xs font-semibold hover:bg-[#1D4ED8] inline-flex items-center gap-1.5"
-                  >
-                    <Crown className="w-3.5 h-3.5" />
-                    <span>Promote This Video — $1</span>
-                  </button>
-                )}
               </div>
             </div>
           )}
@@ -390,7 +368,7 @@ export const SubmitVideoView: React.FC<SubmitVideoViewProps> = ({ onSubmitted })
             disabled={submitting}
             className="w-full min-h-[52px] px-6 rounded-2xl bg-[#2563EB] hover:bg-[#1D4ED8] active:scale-[0.99] disabled:opacity-60 text-white text-sm sm:text-[15px] font-semibold shadow-md shadow-blue-600/20 inline-flex items-center justify-center gap-2 transition-all"
           >
-            <span>{submitting ? 'Saving Links...' : 'Drop Links & Promote Video ($1)'}</span>
+            <span>{submitting ? 'Saving Link...' : 'Drop Link & Continue to Promote ($1)'}</span>
             <ArrowRight className="w-4 h-4" />
           </button>
         </form>
@@ -434,7 +412,7 @@ export const SubmitVideoView: React.FC<SubmitVideoViewProps> = ({ onSubmitted })
         <div className="min-w-0">
           <p className="text-xs font-bold text-slate-900">Direct Platform Promotion</p>
           <p className="text-xs text-slate-600 mt-0.5 leading-relaxed">
-            Your video stays on your YouTube channel. We simply take your video link and channel link to promote it directly on our platform after your $1 membership fee.
+            Your content stays on your YouTube channel. Drop your channel link or a video link, pay the $1 membership fee on the next page, and we promote it directly on our platform.
           </p>
         </div>
       </section>
