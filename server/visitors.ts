@@ -1,7 +1,7 @@
 import type { Request } from 'express';
 import net from 'net';
 import { loadUserById, parseCookies, verifySessionToken, type AuthedUser } from './auth.ts';
-import { db } from './db.ts';
+import { db, sqlAgo, sqlHourGroup, sqlHourLabel, sqlNow } from './db.ts';
 
 export type VisitorEventType =
   | 'session_start'
@@ -260,7 +260,7 @@ function decodeURIComponentSafe(val: string): string {
   }
 }
 
-export function tryResolveOptionalUser(req: Request): AuthedUser | null {
+export async function tryResolveOptionalUser(req: Request): Promise<AuthedUser | null> {
   try {
     const cookies = parseCookies(req);
     const bearer = req.headers.authorization?.startsWith('Bearer ')
@@ -270,7 +270,7 @@ export function tryResolveOptionalUser(req: Request): AuthedUser | null {
     if (!token) return null;
     const payload = verifySessionToken(token);
     if (!payload) return null;
-    return loadUserById(payload.uid);
+    return await loadUserById(payload.uid);
   } catch {
     return null;
   }
@@ -344,17 +344,18 @@ export async function recordVisitorTelemetry(req: Request, payload: TrackPayload
   const ip = extractClientIp(req);
   const ua = cleanText(req.headers['user-agent'], 400);
   const parsedUa = parseUserAgent(ua);
-  const user = tryResolveOptionalUser(req);
+  const user = await tryResolveOptionalUser(req);
 
-  const existing = db
-    .prepare(`SELECT id, user_id, country, city FROM visitor_sessions WHERE session_id = ?`)
-    .get(payload.sessionId) as
-    | { id: number; user_id: number | null; country: string; city: string }
-    | undefined;
+  const existing = await db.queryOne<{
+    id: number;
+    user_id: number | null;
+    country: string;
+    city: string;
+  }>(`SELECT id, user_id, country, city FROM visitor_sessions WHERE session_id = ?`, [payload.sessionId]);
 
   if (!existing) {
     const geo = await resolveGeoLocation(req, ip);
-    db.prepare(
+    await db.execute(
       `INSERT INTO visitor_sessions (
          visitor_id, session_id, user_id, user_email, ip_address,
          country, region, city, isp, timezone, language,
@@ -362,83 +363,96 @@ export async function recordVisitorTelemetry(req: Request, payload: TrackPayload
          screen_resolution, viewport_size, platform, network_type, is_pwa,
          referrer, utm_source, utm_medium, utm_campaign,
          entry_path, current_path, page_views
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`
-    ).run(
-      payload.visitorId,
-      payload.sessionId,
-      user?.id ?? null,
-      user?.email ?? '',
-      ip,
-      geo.country,
-      geo.region,
-      geo.city,
-      geo.isp,
-      payload.timezone,
-      payload.language,
-      parsedUa.deviceType,
-      parsedUa.osName,
-      parsedUa.browserName,
-      parsedUa.deviceVendor,
-      ua,
-      payload.screenResolution,
-      payload.viewportSize,
-      payload.platform,
-      payload.networkType,
-      payload.isPwa ? 1 : 0,
-      payload.referrer || 'Direct',
-      payload.utmSource,
-      payload.utmMedium,
-      payload.utmCampaign,
-      payload.pagePath,
-      payload.pagePath
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+       ON CONFLICT (session_id) DO NOTHING`,
+      [
+        payload.visitorId,
+        payload.sessionId,
+        user?.id ?? null,
+        user?.email ?? '',
+        ip,
+        geo.country,
+        geo.region,
+        geo.city,
+        geo.isp,
+        payload.timezone,
+        payload.language,
+        parsedUa.deviceType,
+        parsedUa.osName,
+        parsedUa.browserName,
+        parsedUa.deviceVendor,
+        ua,
+        payload.screenResolution,
+        payload.viewportSize,
+        payload.platform,
+        payload.networkType,
+        payload.isPwa ? 1 : 0,
+        payload.referrer || 'Direct',
+        payload.utmSource,
+        payload.utmMedium,
+        payload.utmCampaign,
+        payload.pagePath,
+        payload.pagePath,
+      ]
     );
   } else {
     const isPageHit = payload.eventType === 'page_view' || payload.eventType === 'screen_view';
-    db.prepare(
-      `UPDATE visitor_sessions
-       SET last_seen_at = datetime('now'),
-           current_path = CASE WHEN ? != '' THEN ? ELSE current_path END,
-           viewport_size = CASE WHEN ? != '' THEN ? ELSE viewport_size END,
-           network_type = CASE WHEN ? != '' THEN ? ELSE network_type END,
-           is_pwa = CASE WHEN ? = 1 THEN 1 ELSE is_pwa END,
-           user_id = COALESCE(?, user_id),
-           user_email = CASE WHEN ? != '' THEN ? ELSE user_email END,
-           page_views = page_views + ?
-       WHERE session_id = ?`
-    ).run(
-      payload.eventType === 'heartbeat' ? '' : payload.pagePath,
-      payload.pagePath,
-      payload.viewportSize,
-      payload.viewportSize,
-      payload.networkType,
-      payload.networkType,
-      payload.isPwa ? 1 : 0,
-      user?.id ?? null,
-      user?.email ?? '',
-      user?.email ?? '',
-      isPageHit ? 1 : 0,
-      payload.sessionId
+    const setClauses: string[] = [`last_seen_at = ${sqlNow()}`];
+    const setParams: unknown[] = [];
+
+    if (payload.eventType !== 'heartbeat' && payload.pagePath) {
+      setClauses.push(`current_path = ?`);
+      setParams.push(payload.pagePath);
+    }
+    if (payload.viewportSize) {
+      setClauses.push(`viewport_size = ?`);
+      setParams.push(payload.viewportSize);
+    }
+    if (payload.networkType) {
+      setClauses.push(`network_type = ?`);
+      setParams.push(payload.networkType);
+    }
+    if (payload.isPwa) {
+      setClauses.push(`is_pwa = 1`);
+    }
+    if (user?.id) {
+      setClauses.push(`user_id = ?`);
+      setParams.push(user.id);
+    }
+    if (user?.email) {
+      setClauses.push(`user_email = ?`);
+      setParams.push(user.email);
+    }
+    if (isPageHit) {
+      setClauses.push(`page_views = page_views + 1`);
+    }
+
+    setParams.push(payload.sessionId);
+    await db.execute(
+      `UPDATE visitor_sessions SET ${setClauses.join(', ')} WHERE session_id = ?`,
+      setParams
     );
   }
 
   // Keep event log crisp: skip routine heartbeats after session exists
   if (payload.eventType !== 'heartbeat' || !existing) {
-    db.prepare(
+    await db.execute(
       `INSERT INTO visitor_events (session_id, visitor_id, user_id, event_type, page_path, page_title, details_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
-    ).run(
-      payload.sessionId,
-      payload.visitorId,
-      user?.id ?? null,
-      payload.eventType,
-      payload.pagePath,
-      payload.pageTitle,
-      JSON.stringify(payload.details).slice(0, 1000)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [
+        payload.sessionId,
+        payload.visitorId,
+        user?.id ?? null,
+        payload.eventType,
+        payload.pagePath,
+        payload.pageTitle,
+        JSON.stringify(payload.details).slice(0, 1000),
+      ]
     );
   }
 }
 
-export function getAdminVisitorAnalytics(params: {
+export async function getAdminVisitorAnalytics(params: {
   window?: string;
   device?: string;
   authFilter?: string;
@@ -453,13 +467,13 @@ export function getAdminVisitorAnalytics(params: {
   const queryArgs: Array<string | number> = [];
 
   if (windowKey === 'live') {
-    whereClauses.push(`last_seen_at >= datetime('now', '-3 minutes')`);
+    whereClauses.push(`last_seen_at >= ${sqlAgo(3, 'minutes')}`);
   } else if (windowKey === '24h') {
-    whereClauses.push(`last_seen_at >= datetime('now', '-24 hours')`);
+    whereClauses.push(`last_seen_at >= ${sqlAgo(24, 'hours')}`);
   } else if (windowKey === '7d') {
-    whereClauses.push(`last_seen_at >= datetime('now', '-7 days')`);
+    whereClauses.push(`last_seen_at >= ${sqlAgo(7, 'days')}`);
   } else if (windowKey === '30d') {
-    whereClauses.push(`last_seen_at >= datetime('now', '-30 days')`);
+    whereClauses.push(`last_seen_at >= ${sqlAgo(30, 'days')}`);
   }
 
   if (deviceFilter !== 'all') {
@@ -482,180 +496,198 @@ export function getAdminVisitorAnalytics(params: {
   }
 
   const whereSql = whereClauses.length ? `WHERE ${whereClauses.join(' AND ')}` : '';
+  const liveCutoffSql = sqlAgo(3, 'minutes');
+  const dayCutoffSql = sqlAgo(24, 'hours');
+
+  const [
+    activeNowRow,
+    todayVisitorsRow,
+    todaySessionsRow,
+    totalVisitorsRow,
+    totalSessionsRow,
+    totalPageViewsRow,
+    pwaVisitorsRow,
+    authenticatedVisitorsRow,
+  ] = await Promise.all([
+    db.queryOne<{ c: number | string }>(
+      `SELECT COUNT(DISTINCT visitor_id) AS c FROM visitor_sessions WHERE last_seen_at >= ${liveCutoffSql}`
+    ),
+    db.queryOne<{ c: number | string }>(
+      `SELECT COUNT(DISTINCT visitor_id) AS c FROM visitor_sessions WHERE last_seen_at >= ${dayCutoffSql}`
+    ),
+    db.queryOne<{ c: number | string }>(
+      `SELECT COUNT(*) AS c FROM visitor_sessions WHERE last_seen_at >= ${dayCutoffSql}`
+    ),
+    db.queryOne<{ c: number | string }>(`SELECT COUNT(DISTINCT visitor_id) AS c FROM visitor_sessions`),
+    db.queryOne<{ c: number | string }>(`SELECT COUNT(*) AS c FROM visitor_sessions`),
+    db.queryOne<{ s: number | string }>(`SELECT COALESCE(SUM(page_views), 0) AS s FROM visitor_sessions`),
+    db.queryOne<{ c: number | string }>(
+      `SELECT COUNT(DISTINCT visitor_id) AS c FROM visitor_sessions WHERE is_pwa = 1`
+    ),
+    db.queryOne<{ c: number | string }>(
+      `SELECT COUNT(DISTINCT visitor_id) AS c FROM visitor_sessions WHERE user_id IS NOT NULL`
+    ),
+  ]);
 
   const summary = {
-    activeNow: (
-      db
-        .prepare(
-          `SELECT COUNT(DISTINCT visitor_id) AS c FROM visitor_sessions WHERE last_seen_at >= datetime('now', '-3 minutes')`
-        )
-        .get() as { c: number }
-    ).c,
-    todayVisitors: (
-      db
-        .prepare(
-          `SELECT COUNT(DISTINCT visitor_id) AS c FROM visitor_sessions WHERE last_seen_at >= datetime('now', '-24 hours')`
-        )
-        .get() as { c: number }
-    ).c,
-    todaySessions: (
-      db
-        .prepare(
-          `SELECT COUNT(*) AS c FROM visitor_sessions WHERE last_seen_at >= datetime('now', '-24 hours')`
-        )
-        .get() as { c: number }
-    ).c,
-    totalVisitors: (
-      db.prepare(`SELECT COUNT(DISTINCT visitor_id) AS c FROM visitor_sessions`).get() as { c: number }
-    ).c,
-    totalSessions: (
-      db.prepare(`SELECT COUNT(*) AS c FROM visitor_sessions`).get() as { c: number }
-    ).c,
-    totalPageViews: (
-      db.prepare(`SELECT COALESCE(SUM(page_views), 0) AS s FROM visitor_sessions`).get() as { s: number }
-    ).s,
-    pwaVisitors: (
-      db.prepare(`SELECT COUNT(DISTINCT visitor_id) AS c FROM visitor_sessions WHERE is_pwa = 1`).get() as {
-        c: number;
-      }
-    ).c,
-    authenticatedVisitors: (
-      db
-        .prepare(`SELECT COUNT(DISTINCT visitor_id) AS c FROM visitor_sessions WHERE user_id IS NOT NULL`)
-        .get() as { c: number }
-    ).c,
+    activeNow: Number(activeNowRow?.c || 0),
+    todayVisitors: Number(todayVisitorsRow?.c || 0),
+    todaySessions: Number(todaySessionsRow?.c || 0),
+    totalVisitors: Number(totalVisitorsRow?.c || 0),
+    totalSessions: Number(totalSessionsRow?.c || 0),
+    totalPageViews: Number(totalPageViewsRow?.s || 0),
+    pwaVisitors: Number(pwaVisitorsRow?.c || 0),
+    authenticatedVisitors: Number(authenticatedVisitorsRow?.c || 0),
   };
 
-  const visitors = db
-    .prepare(
+  const hourLabelExpr = sqlHourLabel('last_seen_at');
+  const hourGroupExpr = sqlHourGroup('last_seen_at');
+
+  const [
+    visitorsRaw,
+    devicesRaw,
+    locationsRaw,
+    browsersRaw,
+    osRaw,
+    topPagesRaw,
+    topReferrersRaw,
+    hourlyTrafficRaw,
+  ] = await Promise.all([
+    db.queryAll<Record<string, any>>(
       `SELECT *,
-              CASE WHEN last_seen_at >= datetime('now', '-3 minutes') THEN 1 ELSE 0 END AS is_online
+              CASE WHEN last_seen_at >= ${liveCutoffSql} THEN 1 ELSE 0 END AS is_online
        FROM visitor_sessions
        ${whereSql}
        ORDER BY last_seen_at DESC, id DESC
-       LIMIT 150`
-    )
-    .all(...queryArgs) as Array<Record<string, any>>;
-
-  const devices = db
-    .prepare(
+       LIMIT 150`,
+      queryArgs
+    ),
+    db.queryAll<{ label: string; count: number | string }>(
       `SELECT device_type AS label, COUNT(*) AS count
        FROM visitor_sessions ${whereSql}
        GROUP BY device_type
-       ORDER BY count DESC`
-    )
-    .all(...queryArgs);
-
-  const locations = db
-    .prepare(
+       ORDER BY count DESC`,
+      queryArgs
+    ),
+    db.queryAll<{ country: string; count: number | string }>(
       `SELECT country, COUNT(*) AS count
        FROM visitor_sessions ${whereSql}
        GROUP BY country
        ORDER BY count DESC
-       LIMIT 10`
-    )
-    .all(...queryArgs);
-
-  const browsers = db
-    .prepare(
+       LIMIT 10`,
+      queryArgs
+    ),
+    db.queryAll<{ label: string; count: number | string }>(
       `SELECT browser_name AS label, COUNT(*) AS count
        FROM visitor_sessions ${whereSql}
        GROUP BY browser_name
        ORDER BY count DESC
-       LIMIT 8`
-    )
-    .all(...queryArgs);
-
-  const operatingSystems = db
-    .prepare(
+       LIMIT 8`,
+      queryArgs
+    ),
+    db.queryAll<{ label: string; count: number | string }>(
       `SELECT os_name AS label, COUNT(*) AS count
        FROM visitor_sessions ${whereSql}
        GROUP BY os_name
        ORDER BY count DESC
-       LIMIT 8`
-    )
-    .all(...queryArgs);
-
-  const topPages = db
-    .prepare(
+       LIMIT 8`,
+      queryArgs
+    ),
+    db.queryAll<{ path: string; views: number | string; sessions: number | string }>(
       `SELECT current_path AS path, SUM(page_views) AS views, COUNT(*) AS sessions
        FROM visitor_sessions ${whereSql}
        GROUP BY current_path
        ORDER BY views DESC
-       LIMIT 8`
-    )
-    .all(...queryArgs);
-
-  const topReferrers = db
-    .prepare(
+       LIMIT 8`,
+      queryArgs
+    ),
+    db.queryAll<{ referrer: string; count: number | string }>(
       `SELECT referrer, COUNT(*) AS count
        FROM visitor_sessions ${whereSql}
        GROUP BY referrer
        ORDER BY count DESC
-       LIMIT 8`
-    )
-    .all(...queryArgs);
-
-  const hourlyTraffic = db
-    .prepare(
-      `SELECT strftime('%H:00', last_seen_at) AS hour,
+       LIMIT 8`,
+      queryArgs
+    ),
+    db.queryAll<{ hour: string; sessions: number | string; pageViews: number | string }>(
+      `SELECT ${hourLabelExpr} AS hour,
               COUNT(*) AS sessions,
               COALESCE(SUM(page_views), 0) AS pageViews
        FROM visitor_sessions
-       WHERE last_seen_at >= datetime('now', '-24 hours')
-       GROUP BY strftime('%Y-%m-%d %H', last_seen_at)
+       WHERE last_seen_at >= ${dayCutoffSql}
+       GROUP BY ${hourGroupExpr}, ${hourLabelExpr}
        ORDER BY MIN(last_seen_at) ASC`
-    )
-    .all();
+    ),
+  ]);
+
+  const visitors: Array<Record<string, any>> = visitorsRaw.map((v) => ({
+    ...v,
+    id: Number(v.id),
+    page_views: Number(v.page_views || 0),
+    is_pwa: Number(v.is_pwa || 0),
+    is_online: Number(v.is_online || 0),
+  }));
 
   return {
     summary,
     visitors,
     breakdowns: {
-      devices,
-      locations,
-      browsers,
-      operatingSystems,
-      topPages,
-      topReferrers,
-      hourlyTraffic,
+      devices: devicesRaw.map((d) => ({ label: d.label, count: Number(d.count || 0) })),
+      locations: locationsRaw.map((l) => ({ country: l.country, count: Number(l.count || 0) })),
+      browsers: browsersRaw.map((b) => ({ label: b.label, count: Number(b.count || 0) })),
+      operatingSystems: osRaw.map((o) => ({ label: o.label, count: Number(o.count || 0) })),
+      topPages: topPagesRaw.map((p) => ({
+        path: p.path,
+        views: Number(p.views || 0),
+        sessions: Number(p.sessions || 0),
+      })),
+      topReferrers: topReferrersRaw.map((r) => ({ referrer: r.referrer, count: Number(r.count || 0) })),
+      hourlyTraffic: hourlyTrafficRaw.map((h) => ({
+        hour: h.hour,
+        sessions: Number(h.sessions || 0),
+        pageViews: Number((h as any).pageViews ?? (h as any).pageviews ?? 0),
+      })),
     },
   };
 }
 
-export function getAdminVisitorSessionDetail(sessionId: string) {
+export async function getAdminVisitorSessionDetail(sessionId: string) {
   const cleanId = cleanText(sessionId, 80).replace(/[^a-zA-Z0-9_-]/g, '');
   if (!cleanId) return null;
 
-  const session = db
-    .prepare(
-      `SELECT *,
-              CASE WHEN last_seen_at >= datetime('now', '-3 minutes') THEN 1 ELSE 0 END AS is_online
-       FROM visitor_sessions
-       WHERE session_id = ?`
-    )
-    .get(cleanId) as Record<string, any> | undefined;
+  const session = await db.queryOne<Record<string, any>>(
+    `SELECT *,
+            CASE WHEN last_seen_at >= ${sqlAgo(3, 'minutes')} THEN 1 ELSE 0 END AS is_online
+     FROM visitor_sessions
+     WHERE session_id = ?`,
+    [cleanId]
+  );
 
   if (!session) return null;
 
-  const events = db
-    .prepare(
+  const [events, priorSessionsRow] = await Promise.all([
+    db.queryAll(
       `SELECT * FROM visitor_events
        WHERE session_id = ?
        ORDER BY created_at DESC, id DESC
-       LIMIT 120`
-    )
-    .all(cleanId);
-
-  const priorSessionsCount = (
-    db
-      .prepare(`SELECT COUNT(*) AS c FROM visitor_sessions WHERE visitor_id = ?`)
-      .get(session.visitor_id) as { c: number }
-  ).c;
+       LIMIT 120`,
+      [cleanId]
+    ),
+    db.queryOne<{ c: number | string }>(
+      `SELECT COUNT(*) AS c FROM visitor_sessions WHERE visitor_id = ?`,
+      [session.visitor_id]
+    ),
+  ]);
 
   return {
-    session,
+    session: {
+      ...session,
+      id: Number(session.id),
+      page_views: Number(session.page_views || 0),
+      is_pwa: Number(session.is_pwa || 0),
+      is_online: Number(session.is_online || 0),
+    },
     events,
-    priorSessionsCount,
+    priorSessionsCount: Number(priorSessionsRow?.c || 0),
   };
 }

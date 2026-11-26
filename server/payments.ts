@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { db } from './db.ts';
+import { db, sqlNow } from './db.ts';
 
 export type PaymentProviderName = 'paystack' | 'flutterwave' | 'sandbox';
 
@@ -16,10 +16,10 @@ export interface InitPaymentParams {
   description: string;
 }
 
-export function getActiveDefaultProvider(): PaymentProviderName {
-  const row = db
-    .prepare(`SELECT value FROM system_settings WHERE key = 'payment_default_provider'`)
-    .get() as { value: string } | undefined;
+export async function getActiveDefaultProvider(): Promise<PaymentProviderName> {
+  const row = await db.queryOne<{ value: string }>(
+    `SELECT value FROM system_settings WHERE key = 'payment_default_provider'`
+  );
   const v = row?.value;
   if (v === 'paystack' || v === 'flutterwave' || v === 'sandbox') return v;
   return 'paystack';
@@ -27,9 +27,10 @@ export function getActiveDefaultProvider(): PaymentProviderName {
 
 export async function initializePayment(params: InitPaymentParams) {
   // Enforce idempotency
-  const existing = db
-    .prepare(`SELECT * FROM payments WHERE idempotency_key = ?`)
-    .get(params.idempotencyKey) as Record<string, any> | undefined;
+  const existing = await db.queryOne<Record<string, any>>(
+    `SELECT * FROM payments WHERE idempotency_key = ?`,
+    [params.idempotencyKey]
+  );
 
   if (existing) {
     return {
@@ -42,14 +43,12 @@ export async function initializePayment(params: InitPaymentParams) {
 
   const txRef = `VR-${Date.now()}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
 
-  const insertRes = db
-    .prepare(
-      `INSERT INTO payments (
-         user_id, campaign_id, seo_order_id, tx_ref, idempotency_key,
-         provider, amount, currency, status, metadata_json
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`
-    )
-    .run(
+  const paymentId = await db.insert(
+    `INSERT INTO payments (
+       user_id, campaign_id, seo_order_id, tx_ref, idempotency_key,
+       provider, amount, currency, status, metadata_json
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
+    [
       params.userId,
       params.campaignId ?? null,
       params.seoOrderId ?? null,
@@ -58,10 +57,9 @@ export async function initializePayment(params: InitPaymentParams) {
       params.provider,
       params.amount,
       params.currency,
-      JSON.stringify({ description: params.description })
-    );
-
-  const paymentId = Number(insertRes.lastInsertRowid);
+      JSON.stringify({ description: params.description }),
+    ]
+  );
 
   if (params.provider === 'paystack' && process.env.PAYSTACK_SECRET_KEY) {
     const res = await fetch('https://api.paystack.co/transaction/initialize', {
@@ -84,13 +82,13 @@ export async function initializePayment(params: InitPaymentParams) {
       data?: { authorization_url?: string; reference?: string };
     };
     if (!res.ok || !data.status || !data.data?.authorization_url) {
-      db.prepare(`UPDATE payments SET status = 'failed', failure_reason = ?, updated_at = datetime('now') WHERE id = ?`).run(
-        data.message || 'Paystack initialization failed',
-        paymentId
+      await db.execute(
+        `UPDATE payments SET status = 'failed', failure_reason = ?, updated_at = ${sqlNow()} WHERE id = ?`,
+        [data.message || 'Paystack initialization failed', paymentId]
       );
       throw new Error(data.message || 'Paystack initialization failed');
     }
-    const payment = db.prepare(`SELECT * FROM payments WHERE id = ?`).get(paymentId);
+    const payment = await db.queryOne(`SELECT * FROM payments WHERE id = ?`, [paymentId]);
     return {
       payment,
       mode: 'paystack_live' as const,
@@ -124,13 +122,13 @@ export async function initializePayment(params: InitPaymentParams) {
       data?: { link?: string };
     };
     if (!res.ok || data.status !== 'success' || !data.data?.link) {
-      db.prepare(`UPDATE payments SET status = 'failed', failure_reason = ?, updated_at = datetime('now') WHERE id = ?`).run(
-        data.message || 'Flutterwave initialization failed',
-        paymentId
+      await db.execute(
+        `UPDATE payments SET status = 'failed', failure_reason = ?, updated_at = ${sqlNow()} WHERE id = ?`,
+        [data.message || 'Flutterwave initialization failed', paymentId]
       );
       throw new Error(data.message || 'Flutterwave initialization failed');
     }
-    const payment = db.prepare(`SELECT * FROM payments WHERE id = ?`).get(paymentId);
+    const payment = await db.queryOne(`SELECT * FROM payments WHERE id = ?`, [paymentId]);
     return {
       payment,
       mode: 'flutterwave_live' as const,
@@ -140,7 +138,7 @@ export async function initializePayment(params: InitPaymentParams) {
   }
 
   // Test / Sandbox Checkout Mode when live merchant keys are not set in environment
-  const payment = db.prepare(`SELECT * FROM payments WHERE id = ?`).get(paymentId);
+  const payment = await db.queryOne(`SELECT * FROM payments WHERE id = ?`, [paymentId]);
   return {
     payment,
     mode: 'sandbox_checkout' as const,
@@ -157,19 +155,17 @@ export async function verifyPaymentOnServer(
   txRef: string,
   options: { simulateOutcome?: 'succeed' | 'fail'; providerTransactionId?: string; viaWebhook?: boolean } = {}
 ) {
-  const payment = db.prepare(`SELECT * FROM payments WHERE tx_ref = ?`).get(txRef) as
-    | {
-        id: number;
-        user_id: number;
-        campaign_id: number | null;
-        seo_order_id: number | null;
-        tx_ref: string;
-        provider: PaymentProviderName;
-        amount: number;
-        currency: string;
-        status: string;
-      }
-    | undefined;
+  const payment = await db.queryOne<{
+    id: number;
+    user_id: number;
+    campaign_id: number | null;
+    seo_order_id: number | null;
+    tx_ref: string;
+    provider: PaymentProviderName;
+    amount: number;
+    currency: string;
+    status: string;
+  }>(`SELECT * FROM payments WHERE tx_ref = ?`, [txRef]);
 
   if (!payment) {
     throw new Error('Transaction reference not found.');
@@ -227,93 +223,100 @@ export async function verifyPaymentOnServer(
     }
   }
 
-  const tx = db.transaction(() => {
+  await db.transaction(async (tx) => {
+    const nowExpr = sqlNow();
     if (verifiedOk) {
-      db.prepare(
+      await tx.execute(
         `UPDATE payments
          SET status = 'verified',
              verified_server_side = 1,
              webhook_received = CASE WHEN ? = 1 THEN 1 ELSE webhook_received END,
              provider_ref = ?,
              failure_reason = '',
-             updated_at = datetime('now')
-         WHERE id = ?`
-      ).run(options.viaWebhook ? 1 : 0, providerRef, payment.id);
+             updated_at = ${nowExpr}
+         WHERE id = ?`,
+        [options.viaWebhook ? 1 : 0, providerRef, payment.id]
+      );
 
       if (payment.campaign_id) {
-        db.prepare(
+        await tx.execute(
           `UPDATE campaigns
            SET payment_status = 'paid',
                status = CASE WHEN status = 'awaiting_payment' THEN 'under_review' ELSE status END,
-               updated_at = datetime('now')
-           WHERE id = ?`
-        ).run(payment.campaign_id);
-
-        db.prepare(
-          `INSERT INTO campaign_activities (campaign_id, actor_type, actor_id, activity_type, summary, details)
-           VALUES (?, 'system', ?, 'payment_verified', 'Payment verified on server', ?)`
-        ).run(
-          payment.campaign_id,
-          payment.user_id,
-          `Reference ${payment.tx_ref} (${payment.currency} ${payment.amount.toFixed(2)}) verified via ${payment.provider}.`
+               updated_at = ${nowExpr}
+           WHERE id = ?`,
+          [payment.campaign_id]
         );
 
-        db.prepare(
+        await tx.execute(
+          `INSERT INTO campaign_activities (campaign_id, actor_type, actor_id, activity_type, summary, details)
+           VALUES (?, 'system', ?, 'payment_verified', 'Payment verified on server', ?)`,
+          [
+            payment.campaign_id,
+            payment.user_id,
+            `Reference ${payment.tx_ref} (${payment.currency} ${Number(payment.amount).toFixed(2)}) verified via ${payment.provider}.`,
+          ]
+        );
+
+        await tx.execute(
           `INSERT INTO notifications (user_id, title, message, category, link_path)
-           VALUES (?, 'Campaign Payment Verified', ?, 'billing', '/campaigns')`
-        ).run(
-          payment.user_id,
-          `Payment ${payment.tx_ref} was verified. Your promotion campaign is now under review.`
+           VALUES (?, 'Campaign Payment Verified', ?, 'billing', '/campaigns')`,
+          [payment.user_id, `Payment ${payment.tx_ref} was verified. Your promotion campaign is now under review.`]
         );
       }
 
       if (payment.seo_order_id) {
-        db.prepare(
+        await tx.execute(
           `UPDATE seo_orders
            SET payment_status = 'paid',
                order_status = CASE WHEN order_status = 'awaiting_payment' THEN 'queued' ELSE order_status END,
-               updated_at = datetime('now')
-           WHERE id = ?`
-        ).run(payment.seo_order_id);
+               updated_at = ${nowExpr}
+           WHERE id = ?`,
+          [payment.seo_order_id]
+        );
 
-        db.prepare(
+        await tx.execute(
           `INSERT INTO notifications (user_id, title, message, category, link_path)
-           VALUES (?, 'SEO Optimization Order Confirmed', ?, 'billing', '/seo')`
-        ).run(
-          payment.user_id,
-          `Payment ${payment.tx_ref} was verified. Our specialist team has queued your optimization order.`
+           VALUES (?, 'SEO Optimization Order Confirmed', ?, 'billing', '/seo')`,
+          [
+            payment.user_id,
+            `Payment ${payment.tx_ref} was verified. Our specialist team has queued your optimization order.`,
+          ]
         );
       }
     } else {
-      db.prepare(
+      await tx.execute(
         `UPDATE payments
          SET status = 'failed',
              failure_reason = ?,
              webhook_received = CASE WHEN ? = 1 THEN 1 ELSE webhook_received END,
-             updated_at = datetime('now')
-         WHERE id = ?`
-      ).run(failureReason, options.viaWebhook ? 1 : 0, payment.id);
+             updated_at = ${nowExpr}
+         WHERE id = ?`,
+        [failureReason, options.viaWebhook ? 1 : 0, payment.id]
+      );
 
       if (payment.campaign_id) {
-        db.prepare(`UPDATE campaigns SET payment_status = 'failed', updated_at = datetime('now') WHERE id = ?`).run(
-          payment.campaign_id
+        await tx.execute(
+          `UPDATE campaigns SET payment_status = 'failed', updated_at = ${nowExpr} WHERE id = ?`,
+          [payment.campaign_id]
         );
       }
       if (payment.seo_order_id) {
-        db.prepare(`UPDATE seo_orders SET payment_status = 'failed', updated_at = datetime('now') WHERE id = ?`).run(
-          payment.seo_order_id
+        await tx.execute(
+          `UPDATE seo_orders SET payment_status = 'failed', updated_at = ${nowExpr} WHERE id = ?`,
+          [payment.seo_order_id]
         );
       }
 
-      db.prepare(
+      await tx.execute(
         `INSERT INTO notifications (user_id, title, message, category, link_path)
-         VALUES (?, 'Payment Failed', ?, 'billing', '/profile')`
-      ).run(payment.user_id, `Payment ${payment.tx_ref} could not be verified: ${failureReason}`);
+         VALUES (?, 'Payment Failed', ?, 'billing', '/profile')`,
+        [payment.user_id, `Payment ${payment.tx_ref} could not be verified: ${failureReason}`]
+      );
     }
   });
 
-  tx();
-  const updated = db.prepare(`SELECT * FROM payments WHERE id = ?`).get(payment.id);
+  const updated = await db.queryOne(`SELECT * FROM payments WHERE id = ?`, [payment.id]);
   return { payment: updated, alreadyVerified: false, verified: verifiedOk, failureReason };
 }
 

@@ -74,10 +74,10 @@ const ALLOWED_MODELS = new Set([
   'gemini-3.1-flash-lite',
 ]);
 
-export function getActiveGeminiModel(): string {
-  const row = db
-    .prepare(`SELECT value FROM system_settings WHERE key = 'gemini_model'`)
-    .get() as { value: string } | undefined;
+export async function getActiveGeminiModel(): Promise<string> {
+  const row = await db.queryOne<{ value: string }>(
+    `SELECT value FROM system_settings WHERE key = 'gemini_model'`
+  );
   const candidate = row?.value?.trim() || 'gemini-4-hydrogen';
   return ALLOWED_MODELS.has(candidate) ? candidate : 'gemini-4-hydrogen';
 }
@@ -220,11 +220,11 @@ function validateGeminiSeoPayload(raw: unknown): Omit<GeminiSeoOutput, 'modelUse
 
 export async function generateYouTubeSeoAnalysis(input: GeminiSeoInput): Promise<GeminiSeoOutput> {
   const ai = getGeminiClient();
-  const model = getActiveGeminiModel();
+  const model = await getActiveGeminiModel();
 
-  const maxCompetitorsRow = db
-    .prepare(`SELECT value FROM system_settings WHERE key = 'gemini_max_competitors'`)
-    .get() as { value: string } | undefined;
+  const maxCompetitorsRow = await db.queryOne<{ value: string }>(
+    `SELECT value FROM system_settings WHERE key = 'gemini_max_competitors'`
+  );
   const maxComp = Math.min(Math.max(Number(maxCompetitorsRow?.value || 8), 1), 12);
   const competitorsSlice = input.competitors.slice(0, maxComp);
 

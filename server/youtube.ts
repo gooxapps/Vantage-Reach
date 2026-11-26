@@ -31,18 +31,18 @@ export interface YouTubeCompetitorItem {
   source: 'youtube_data_api_v3';
 }
 
-export function getYouTubeApiKey(): string {
-  const row = db
-    .prepare(`SELECT value FROM system_settings WHERE key = 'youtube_api_key'`)
-    .get() as { value: string } | undefined;
+export async function getYouTubeApiKey(): Promise<string> {
+  const row = await db.queryOne<{ value: string }>(
+    `SELECT value FROM system_settings WHERE key = 'youtube_api_key'`
+  );
   const dbKey = row?.value?.trim();
   return dbKey || process.env.YOUTUBE_API_KEY?.trim() || '';
 }
 
-export function getYouTubeDefaultRegion(): string {
-  const row = db
-    .prepare(`SELECT value FROM system_settings WHERE key = 'youtube_default_region'`)
-    .get() as { value: string } | undefined;
+export async function getYouTubeDefaultRegion(): Promise<string> {
+  const row = await db.queryOne<{ value: string }>(
+    `SELECT value FROM system_settings WHERE key = 'youtube_default_region'`
+  );
   return row?.value?.trim() || 'US';
 }
 
@@ -156,7 +156,7 @@ function createYouTubeError(message: string, code: string, status: number): Erro
 }
 
 export async function fetchYouTubeVideoDetails(videoId: string): Promise<YouTubeVideoDetails> {
-  const apiKey = getYouTubeApiKey();
+  const apiKey = await getYouTubeApiKey();
   const canonicalUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
   if (!apiKey) {
@@ -277,7 +277,7 @@ export async function searchYouTubeCompetitors(
   searchPhrase: string,
   maxResults = 8
 ): Promise<{ items: YouTubeCompetitorItem[]; regionCode: string }> {
-  const apiKey = getYouTubeApiKey();
+  const apiKey = await getYouTubeApiKey();
   if (!apiKey) {
     const err = new Error(
       'YouTube Data API v3 key is required for live competitor search. An administrator can configure it in Admin Console -> YouTube API Config or via YOUTUBE_API_KEY.'
@@ -286,7 +286,7 @@ export async function searchYouTubeCompetitors(
     throw err;
   }
 
-  const regionCode = getYouTubeDefaultRegion();
+  const regionCode = await getYouTubeDefaultRegion();
   const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&q=${encodeURIComponent(
     searchPhrase
   )}&maxResults=${Math.min(Math.max(maxResults, 1), 15)}&regionCode=${encodeURIComponent(
