@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import {
   Activity,
-  ArrowLeft,
   BarChart3,
   Bell,
   CreditCard,
@@ -11,16 +10,20 @@ import {
   KeyRound,
   Layers,
   ListChecks,
+  LogOut,
+  Menu,
   Rocket,
   Shield,
   Sparkles,
   UserCog,
   Users,
   Video,
+  X,
 } from 'lucide-react';
 import { api, formatCount, formatCurrency, formatDateTime, formatStatusLabel } from '../lib/api';
 import type { UserSession } from '../types';
 import { AdminVisitorsPanel } from './AdminVisitorsPanel';
+import { VantageLogo } from './BrandMark';
 
 type AdminModule =
   | 'overview'
@@ -40,30 +43,65 @@ type AdminModule =
   | 'permissions'
   | 'audit';
 
-const MODULES: Array<{ id: AdminModule; label: string; icon: React.ComponentType<{ className?: string }> }> = [
-  { id: 'overview', label: 'Overview', icon: BarChart3 },
-  { id: 'visitors', label: 'Site Visitors', icon: Eye },
-  { id: 'customers', label: 'Customers', icon: Users },
-  { id: 'videos', label: 'Video Submissions', icon: Video },
-  { id: 'campaigns', label: 'Campaigns', icon: Rocket },
-  { id: 'tasks', label: 'Promotion Tasks', icon: ListChecks },
-  { id: 'seo_orders', label: 'SEO Orders', icon: Layers },
-  { id: 'payments', label: 'Payments', icon: CreditCard },
-  { id: 'reports', label: 'Reports', icon: FileText },
-  { id: 'pricing', label: 'Pricing', icon: DollarSign },
-  { id: 'notifications', label: 'Notifications', icon: Bell },
-  { id: 'gemini', label: 'Gemini Config', icon: Sparkles },
-  { id: 'youtube', label: 'YouTube API', icon: KeyRound },
-  { id: 'staff', label: 'Staff Accounts', icon: UserCog },
-  { id: 'permissions', label: 'Permissions', icon: Shield },
-  { id: 'audit', label: 'Audit Logs', icon: Activity },
+type AdminGroup = 'Operations' | 'Billing & Messaging' | 'System & Access';
+
+const MODULES: Array<{
+  id: AdminModule;
+  label: string;
+  group: AdminGroup;
+  permissions: string[];
+  icon: React.ComponentType<{ className?: string }>;
+}> = [
+  { id: 'overview', label: 'Overview', group: 'Operations', permissions: ['overview:read'], icon: BarChart3 },
+  { id: 'visitors', label: 'Site Visitors', group: 'Operations', permissions: ['visitors:read'], icon: Eye },
+  { id: 'customers', label: 'Customers', group: 'Operations', permissions: ['customers:manage'], icon: Users },
+  {
+    id: 'videos',
+    label: 'Video Submissions',
+    group: 'Operations',
+    permissions: ['videos:read', 'videos:manage'],
+    icon: Video,
+  },
+  { id: 'campaigns', label: 'Campaigns', group: 'Operations', permissions: ['campaigns:manage'], icon: Rocket },
+  { id: 'tasks', label: 'Promotion Tasks', group: 'Operations', permissions: ['tasks:manage'], icon: ListChecks },
+  { id: 'seo_orders', label: 'SEO Orders', group: 'Operations', permissions: ['seo_orders:manage'], icon: Layers },
+  { id: 'payments', label: 'Payments', group: 'Billing & Messaging', permissions: ['payments:manage'], icon: CreditCard },
+  {
+    id: 'reports',
+    label: 'Reports',
+    group: 'Billing & Messaging',
+    permissions: ['reports:read', 'reports:manage'],
+    icon: FileText,
+  },
+  { id: 'pricing', label: 'Pricing', group: 'Billing & Messaging', permissions: ['pricing:manage'], icon: DollarSign },
+  {
+    id: 'notifications',
+    label: 'Notifications',
+    group: 'Billing & Messaging',
+    permissions: ['notifications:manage'],
+    icon: Bell,
+  },
+  { id: 'gemini', label: 'Gemini Config', group: 'System & Access', permissions: ['settings:gemini'], icon: Sparkles },
+  { id: 'youtube', label: 'YouTube API', group: 'System & Access', permissions: ['settings:youtube'], icon: KeyRound },
+  { id: 'staff', label: 'Staff Accounts', group: 'System & Access', permissions: ['staff:manage'], icon: UserCog },
+  { id: 'permissions', label: 'Permissions', group: 'System & Access', permissions: ['roles:manage'], icon: Shield },
+  { id: 'audit', label: 'Audit Logs', group: 'System & Access', permissions: ['audit:read'], icon: Activity },
 ];
+
+const MODULE_GROUPS: AdminGroup[] = ['Operations', 'Billing & Messaging', 'System & Access'];
 
 export const AdminConsoleView: React.FC<{
   user: UserSession;
-  onNavigate?: (tab: string) => void;
-}> = ({ user, onNavigate }) => {
-  const [activeMod, setActiveMod] = useState<AdminModule>('overview');
+  onLogout: () => void;
+  updateState?: string;
+}> = ({ user, onLogout, updateState }) => {
+  const visibleModules = MODULES.filter((m) => {
+    if (user.adminRole === 'super_admin' || !user.permissions || user.permissions.length === 0) return true;
+    return m.permissions.some((perm) => user.permissions.includes(perm));
+  });
+
+  const [activeMod, setActiveMod] = useState<AdminModule>(visibleModules[0]?.id || 'overview');
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [data, setData] = useState<Record<string, any>>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -90,7 +128,7 @@ export const AdminConsoleView: React.FC<{
   const [defaultProvider, setDefaultProvider] = useState('paystack');
 
   const loadModule = async (mod: AdminModule) => {
-    if (mod === 'visitors') {
+    if (mod === 'visitors' || mod === 'notifications') {
       setLoading(false);
       setError('');
       return;
@@ -164,10 +202,20 @@ export const AdminConsoleView: React.FC<{
     loadModule(activeMod);
   }, [activeMod]);
 
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMobileMenuOpen(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
   if (!user.isAdmin) {
     return (
-      <div className="rounded-2xl border border-red-200 bg-red-50 p-6 text-sm text-red-700">
-        Administrator authorization required.
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
+        <div className="rounded-2xl border border-red-200 bg-red-50 p-6 text-sm text-red-700">
+          Administrator authorization required.
+        </div>
       </div>
     );
   }
@@ -177,93 +225,209 @@ export const AdminConsoleView: React.FC<{
     setTimeout(() => setNotice(''), 3500);
   };
 
-  return (
+  const selectModule = (modId: AdminModule) => {
+    setError('');
+    setActiveMod(modId);
+    setMobileMenuOpen(false);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const activeModuleMeta = visibleModules.find((m) => m.id === activeMod) || visibleModules[0] || MODULES[0];
+
+  const renderMenuItems = () => (
     <div className="space-y-5">
-      <div className="space-y-1.5">
-        {onNavigate && (
+      {MODULE_GROUPS.map((group) => {
+        const groupItems = visibleModules.filter((m) => m.group === group);
+        if (groupItems.length === 0) return null;
+        return (
+          <div key={group} className="space-y-1">
+            <p className="px-3 pb-1 text-[11px] font-semibold text-slate-400">{group}</p>
+            {groupItems.map((m) => {
+              const Icon = m.icon;
+              const active = activeMod === m.id;
+              return (
+                <button
+                  key={m.id}
+                  type="button"
+                  onClick={() => selectModule(m.id)}
+                  className={`w-full min-h-[42px] px-3 rounded-xl flex items-center gap-3 text-sm font-medium transition-colors whitespace-nowrap ${
+                    active
+                      ? 'bg-blue-50 text-[#2563EB] font-semibold'
+                      : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+                  }`}
+                >
+                  <Icon className={`w-4 h-4 shrink-0 ${active ? 'text-[#2563EB]' : 'text-slate-400'}`} />
+                  <span className="truncate">{m.label}</span>
+                </button>
+              );
+            })}
+          </div>
+        );
+      })}
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col lg:flex-row overflow-x-clip">
+      {updateState === 'updating' && (
+        <div
+          role="status"
+          className="fixed top-14 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 rounded-xl border border-blue-200 bg-blue-50 px-4 py-2 text-xs font-semibold text-[#1D4ED8] shadow-md whitespace-nowrap"
+        >
+          <span>Syncing latest update...</span>
+        </div>
+      )}
+
+      {/* Desktop Admin-Only Left Sidebar */}
+      <aside className="hidden lg:flex lg:w-64 lg:flex-col lg:fixed lg:inset-y-0 bg-white border-r border-slate-200 z-30">
+        <div className="h-16 px-5 flex items-center gap-3 border-b border-slate-100 shrink-0">
+          <VantageLogo size={32} />
+          <span className="text-base font-extrabold text-slate-900 font-display tracking-tight whitespace-nowrap">
+            Vantage Reach
+          </span>
+        </div>
+
+        <nav className="flex-1 p-3 overflow-y-auto" aria-label="Admin Navigation">
+          {renderMenuItems()}
+        </nav>
+
+        <div className="p-4 border-t border-slate-100 space-y-2.5 shrink-0">
+          <div className="text-xs text-slate-500">
+            <p className="font-semibold text-slate-900 truncate">{user.fullName || user.email}</p>
+            <p className="truncate mt-0.5">{formatStatusLabel(user.adminRole || 'admin')}</p>
+          </div>
           <button
             type="button"
-            onClick={() => onNavigate('dashboard')}
-            className="min-h-[40px] px-2.5 -ml-2.5 rounded-xl text-xs font-semibold text-slate-700 hover:bg-slate-100 inline-flex items-center gap-1.5"
+            onClick={onLogout}
+            className="w-full min-h-[40px] px-3 rounded-xl border border-slate-200 bg-white hover:bg-red-50 hover:border-red-200 text-xs font-semibold text-red-600 flex items-center justify-center gap-2 transition-colors whitespace-nowrap"
           >
-            <ArrowLeft className="w-4 h-4" />
-            <span>Back to Creator Home</span>
+            <LogOut className="w-3.5 h-3.5 shrink-0" />
+            <span>Sign Out</span>
           </button>
-        )}
-        <div>
-          <p className="text-xs font-semibold text-[#2563EB]">
-            Administration Console · Role: {formatStatusLabel(user.adminRole || 'admin')}
-          </p>
-          <h1 className="text-2xl font-bold text-slate-900 mt-0.5">Vantage Reach Operations</h1>
         </div>
-      </div>
+      </aside>
 
-      {/* Horizontal scrollable module switcher on mobile, wrapped on desktop */}
-      <div className="flex flex-nowrap lg:flex-wrap overflow-x-auto lg:overflow-visible gap-1.5 pb-1.5 -mx-1 px-1">
-        {MODULES.map((m) => {
-          const Icon = m.icon;
-          const active = activeMod === m.id;
-          return (
-            <button
-              key={m.id}
-              type="button"
-              onClick={() => {
-                setError('');
-                setActiveMod(m.id);
-              }}
-              className={`min-h-[40px] px-3 py-1.5 rounded-xl text-xs font-semibold inline-flex items-center gap-1.5 border transition-colors whitespace-nowrap ${
-                active
-                  ? 'bg-blue-700 text-white border-blue-700'
-                  : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
-              }`}
-            >
-              <Icon className="w-3.5 h-3.5 shrink-0" />
-              <span>{m.label}</span>
-            </button>
-          );
-        })}
-      </div>
-
-      {error && (
-        <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-xs font-medium text-red-700">
-          {error}
+      {/* Mobile Slide-Over Admin Menu Drawer */}
+      {mobileMenuOpen && (
+        <div className="lg:hidden fixed inset-0 z-50 flex">
+          <button
+            type="button"
+            aria-label="Close Admin Menu"
+            onClick={() => setMobileMenuOpen(false)}
+            className="fixed inset-0 bg-slate-900/40 backdrop-blur-[1px]"
+          />
+          <aside className="relative w-72 max-w-[85vw] bg-white h-full border-r border-slate-200 flex flex-col z-10 shadow-xl">
+            <div className="h-14 px-4 flex items-center justify-between border-b border-slate-100 shrink-0">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <VantageLogo size={30} />
+                <span className="text-sm font-extrabold text-slate-900 font-display tracking-tight whitespace-nowrap">
+                  Admin Menu
+                </span>
+              </div>
+              <button
+                type="button"
+                aria-label="Close Menu"
+                onClick={() => setMobileMenuOpen(false)}
+                className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl text-slate-600 hover:bg-slate-100"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <nav className="flex-1 p-3 overflow-y-auto" aria-label="Mobile Admin Navigation">
+              {renderMenuItems()}
+            </nav>
+            <div className="p-4 border-t border-slate-100 space-y-2.5 shrink-0">
+              <div className="text-xs text-slate-500">
+                <p className="font-semibold text-slate-900 truncate">{user.fullName || user.email}</p>
+                <p className="truncate mt-0.5">{formatStatusLabel(user.adminRole || 'admin')}</p>
+              </div>
+              <button
+                type="button"
+                onClick={onLogout}
+                className="w-full min-h-[44px] px-3 rounded-xl border border-slate-200 bg-white hover:bg-red-50 text-xs font-semibold text-red-600 flex items-center justify-center gap-2"
+              >
+                <LogOut className="w-4 h-4 shrink-0" />
+                <span>Sign Out</span>
+              </button>
+            </div>
+          </aside>
         </div>
       )}
-      {notice && (
-        <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs font-medium text-emerald-800">
-          {notice}
-        </div>
-      )}
 
-      {loading && <div className="h-40 rounded-2xl bg-slate-100 animate-pulse" />}
-
-      {!loading && activeMod === 'overview' && data.overview && (
-        <div className="space-y-4">
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+      {/* Dedicated Admin Main Column */}
+      <div className="flex-1 lg:pl-64 flex flex-col min-w-0">
+        <header className="sticky top-0 z-20 h-14 lg:h-16 bg-white/95 backdrop-blur-md border-b border-slate-200 px-3.5 sm:px-6 flex items-center justify-between gap-3 pt-safe">
+          <div className="flex items-center gap-2.5 min-w-0">
             <button
               type="button"
-              onClick={() => setActiveMod('visitors')}
-              className="rounded-2xl border border-emerald-200 bg-emerald-50/60 hover:bg-emerald-50 p-4 text-left transition-colors"
+              onClick={() => setMobileMenuOpen(true)}
+              aria-label="Open Admin Menu"
+              className="lg:hidden min-h-[44px] min-w-[44px] -ml-1.5 rounded-xl flex items-center justify-center text-slate-700 hover:bg-slate-100"
             >
-              <p className="text-xs font-semibold text-emerald-700 flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                <span>Online Now</span>
-              </p>
-              <p className="text-xl font-bold font-mono tabular-nums text-slate-900 mt-1">
-                {formatCount(data.overview.activeVisitorsNow ?? 0)}
-              </p>
+              <Menu className="w-5 h-5" />
             </button>
+            <div className="flex items-center gap-2 text-xs font-medium text-slate-500 min-w-0">
+              <span className="font-semibold text-slate-900 whitespace-nowrap">Vantage Reach Admin</span>
+              <span aria-hidden="true">·</span>
+              <span className="truncate text-[#2563EB] font-semibold">{activeModuleMeta.label}</span>
+            </div>
+          </div>
 
-            <button
-              type="button"
-              onClick={() => setActiveMod('visitors')}
-              className="rounded-2xl border border-blue-200 bg-blue-50/50 hover:bg-blue-50 p-4 text-left transition-colors"
-            >
-              <p className="text-xs font-semibold text-[#2563EB]">Visitors (24h)</p>
-              <p className="text-xl font-bold font-mono tabular-nums text-slate-900 mt-1">
-                {formatCount(data.overview.todayVisitors ?? 0)}
-              </p>
-            </button>
+          <button
+            type="button"
+            onClick={onLogout}
+            className="min-h-[40px] px-3 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
+          >
+            <LogOut className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+            <span>Sign Out</span>
+          </button>
+        </header>
+
+        <main className="flex-1 w-full max-w-6xl mx-auto px-4 sm:px-6 py-5 lg:py-6 space-y-5">
+          <div>
+            <p className="text-xs font-medium text-slate-500">
+              Administration Console · {formatStatusLabel(user.adminRole || 'admin')}
+            </p>
+            <h1 className="text-2xl font-bold text-slate-900 mt-0.5">{activeModuleMeta.label}</h1>
+          </div>
+
+          {error && (
+            <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-xs font-medium text-red-700">
+              {error}
+            </div>
+          )}
+          {notice && (
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs font-medium text-emerald-800">
+              {notice}
+            </div>
+          )}
+
+          {loading && <div className="h-40 rounded-2xl bg-slate-100 animate-pulse" />}
+
+          {!loading && activeMod === 'overview' && data.overview && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                <button
+                  type="button"
+                  onClick={() => selectModule('visitors')}
+                  className="rounded-2xl border border-emerald-200 bg-emerald-50/60 hover:bg-emerald-50 p-4 text-left transition-colors"
+                >
+                  <p className="text-xs font-semibold text-emerald-700">Online Now</p>
+                  <p className="text-xl font-bold font-mono tabular-nums text-slate-900 mt-1">
+                    {formatCount(data.overview.activeVisitorsNow ?? 0)}
+                  </p>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => selectModule('visitors')}
+                  className="rounded-2xl border border-blue-200 bg-blue-50/50 hover:bg-blue-50 p-4 text-left transition-colors"
+                >
+                  <p className="text-xs font-semibold text-[#2563EB]">Visitors (24h)</p>
+                  <p className="text-xl font-bold font-mono tabular-nums text-slate-900 mt-1">
+                    {formatCount(data.overview.todayVisitors ?? 0)}
+                  </p>
+                </button>
 
             {[
               { label: 'Customers', value: formatCount(data.overview.customers) },
@@ -891,6 +1055,8 @@ export const AdminConsoleView: React.FC<{
           </table>
         </div>
       )}
+        </main>
+      </div>
     </div>
   );
 };

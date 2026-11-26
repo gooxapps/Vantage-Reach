@@ -15,7 +15,6 @@ import {
   Plus,
   PlusCircle,
   Rocket,
-  Shield,
   Sparkles,
   User,
   X,
@@ -46,8 +45,7 @@ type NavTab =
   | 'plans'
   | 'campaigns'
   | 'reports'
-  | 'profile'
-  | 'admin';
+  | 'profile';
 
 function getInitials(fullName: string, email: string): string {
   const source = (fullName || email.split('@')[0] || 'VR').trim();
@@ -85,7 +83,9 @@ export default function App() {
     try {
       const res = await api.get<{ user: UserSession }>('/api/auth/me');
       setUser(res.user);
-      fetchNotifications();
+      if (!res.user.isAdmin) {
+        fetchNotifications();
+      }
     } catch {
       setAuthToken(null);
       setUser(null);
@@ -96,16 +96,16 @@ export default function App() {
 
   const { updateState } = usePWAInstall();
   const isAuthedRef = useRef(false);
+  const isAdminRef = useRef(false);
   isAuthedRef.current = Boolean(user);
+  isAdminRef.current = Boolean(user?.isAdmin);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const tabParam = params.get('tab') as NavTab | null;
     if (
       tabParam &&
-      ['dashboard', 'submit', 'intelligence', 'seo', 'plans', 'campaigns', 'reports', 'profile', 'admin'].includes(
-        tabParam
-      )
+      ['dashboard', 'submit', 'intelligence', 'seo', 'plans', 'campaigns', 'reports', 'profile'].includes(tabParam)
     ) {
       setActiveTab(tabParam);
     }
@@ -119,7 +119,7 @@ export default function App() {
       setNotifications([]);
     });
     const handleAppSync = () => {
-      if (isAuthedRef.current) {
+      if (isAuthedRef.current && !isAdminRef.current) {
         fetchNotifications();
       }
     };
@@ -131,7 +131,7 @@ export default function App() {
   }, [fetchNotifications]);
 
   useEffect(() => {
-    if (!user) return;
+    if (!user || user.isAdmin) return;
     const params = new URLSearchParams(window.location.search);
     const txRef = params.get('tx_ref') || params.get('reference') || params.get('trxref');
     const transactionId = params.get('transaction_id');
@@ -181,9 +181,13 @@ export default function App() {
 
   useEffect(() => {
     if (user) {
-      trackScreenView(`/${activeTab}`, `Vantage Reach · ${activeTab}`);
+      if (user.isAdmin) {
+        trackScreenView('/admin', 'Vantage Reach Admin');
+      } else {
+        trackScreenView(`/${activeTab}`, `Vantage Reach · ${activeTab}`);
+      }
     }
-  }, [activeTab, user?.id]);
+  }, [activeTab, user?.id, user?.isAdmin]);
 
   useEffect(() => {
     const handleOutside = (e: MouseEvent) => {
@@ -265,10 +269,21 @@ export default function App() {
         <AuthViews
           onAuthenticated={(u) => {
             setUser(u);
-            setActiveTab('dashboard');
-            fetchNotifications();
+            if (!u.isAdmin) {
+              setActiveTab('dashboard');
+              fetchNotifications();
+            }
           }}
         />
+      </>
+    );
+  }
+
+  if (user.isAdmin) {
+    return (
+      <>
+        <OfflineIndicator />
+        <AdminConsoleView user={user} onLogout={handleLogout} updateState={updateState} />
       </>
     );
   }
@@ -290,10 +305,6 @@ export default function App() {
     { id: 'reports', label: 'Reports', icon: BarChart3 },
     { id: 'profile', label: 'Profile & Settings', icon: User },
   ];
-
-  if (user.isAdmin) {
-    sidebarItems.push({ id: 'admin', label: 'Admin Console', icon: Shield });
-  }
 
   return (
     <div className="min-h-screen bg-white lg:bg-slate-50 text-slate-900 flex flex-col lg:flex-row relative overflow-x-clip">
@@ -386,28 +397,11 @@ export default function App() {
             </span>
           </div>
 
-          {/* Top Right Controls: Install App + Admin + Notifications Bell + Profile Avatar */}
+          {/* Top Right Controls: Install App + Notifications Bell + Profile Avatar */}
           <div className="flex items-center gap-1 sm:gap-2.5 shrink-0">
             <div className="lg:hidden">
               <PWAInstallButton compact />
             </div>
-
-            {user.isAdmin && (
-              <button
-                type="button"
-                onClick={() => handleNavigate(activeTab === 'admin' ? 'dashboard' : 'admin')}
-                aria-current={activeTab === 'admin' ? 'page' : undefined}
-                aria-label={activeTab === 'admin' ? 'Exit Admin Console' : 'Open Admin Console'}
-                className={`inline-flex min-h-[40px] px-2.5 sm:px-3 rounded-xl border text-xs font-semibold items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors ${
-                  activeTab === 'admin'
-                    ? 'border-[#2563EB] bg-[#2563EB] text-white shadow-sm'
-                    : 'border-blue-200 bg-blue-50/90 text-[#1D4ED8] hover:bg-blue-100'
-                }`}
-              >
-                <Shield className={`w-3.5 h-3.5 shrink-0 ${activeTab === 'admin' ? 'text-white' : 'text-[#2563EB]'}`} />
-                <span>Admin</span>
-              </button>
-            )}
 
             {/* Notification Bell + Dropdown */}
             <div className="relative" ref={notifRef}>
@@ -525,16 +519,6 @@ export default function App() {
                     <Crown className="w-4 h-4 text-slate-400" />
                     <span>Plans & Services</span>
                   </button>
-                  {user.isAdmin && (
-                    <button
-                      type="button"
-                      onClick={() => handleNavigate('admin')}
-                      className="w-full min-h-[40px] px-3 rounded-xl text-left text-xs font-semibold text-[#2563EB] hover:bg-blue-50 flex items-center gap-2.5"
-                    >
-                      <Shield className="w-4 h-4 text-[#2563EB]" />
-                      <span>Admin Console</span>
-                    </button>
-                  )}
                   <div className="border-t border-slate-100 mt-1 pt-1">
                     <button
                       type="button"
@@ -616,14 +600,8 @@ export default function App() {
             <ReportsView selectedVideoId={selectedVideoId} onSelectVideo={setSelectedVideoId} />
           )}
           {activeTab === 'profile' && (
-            <ProfileView
-              user={user}
-              onLogout={handleLogout}
-              onUserUpdated={refreshMe}
-              onOpenAdmin={user.isAdmin ? () => handleNavigate('admin') : undefined}
-            />
+            <ProfileView user={user} onLogout={handleLogout} onUserUpdated={refreshMe} />
           )}
-          {activeTab === 'admin' && <AdminConsoleView user={user} onNavigate={handleNavigate} />}
         </main>
       </div>
 

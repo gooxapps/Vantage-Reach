@@ -20,8 +20,11 @@ export function getPostgresConnectionString(): string {
   return (
     process.env.DATABASE_URL?.trim() ||
     process.env.POSTGRES_URL?.trim() ||
+    process.env.DATABASE_POSTGRES_URL?.trim() ||
     process.env.POSTGRES_PRISMA_URL?.trim() ||
+    process.env.DATABASE_POSTGRES_PRISMA_URL?.trim() ||
     process.env.POSTGRES_URL_NON_POOLING?.trim() ||
+    process.env.DATABASE_POSTGRES_URL_NON_POOLING?.trim() ||
     process.env.DATABASE_URL_UNPOOLED?.trim() ||
     ''
   );
