@@ -336,7 +336,7 @@ export const SeoAndCompetitorsView: React.FC<SeoAndCompetitorsViewProps> = ({
                     className="min-h-[44px] px-4 py-2 rounded-xl bg-slate-900 text-white text-xs font-semibold hover:bg-slate-800 inline-flex items-center gap-2 whitespace-nowrap"
                   >
                     <ShoppingBag className="w-4 h-4" />
-                    <span>Order Pro Optimization</span>
+                    <span>Promote Video — $1</span>
                   </button>
                 </div>
               </div>

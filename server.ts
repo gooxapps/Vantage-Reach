@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import crypto from 'crypto';
 import express from 'express';
+import fs from 'fs';
 import path from 'path';
 import {
   clearSessionCookie,
@@ -24,6 +25,8 @@ import {
 import { generateYouTubeSeoAnalysis } from './server/gemini.ts';
 import {
   getActiveDefaultProvider,
+  getFlutterwaveCredentials,
+  getPaymentGatewayStatus,
   initializePayment,
   verifyPaymentOnServer,
   verifyWebhookSignature,
@@ -31,8 +34,10 @@ import {
 } from './server/payments.ts';
 import {
   extractYouTubeVideoId,
+  fetchYouTubeSubmissionDetails,
   fetchYouTubeVideoDetails,
   searchYouTubeCompetitors,
+  validateYouTubeChannelUrl,
 } from './server/youtube.ts';
 import {
   getAdminVisitorAnalytics,
@@ -45,6 +50,22 @@ function toNullableNum(val: unknown): number | null {
   if (val === null || val === undefined || val === '') return null;
   const n = Number(val);
   return Number.isFinite(n) ? n : null;
+}
+
+function getAppBaseUrl(req: express.Request): string {
+  const configured = process.env.APP_URL?.trim();
+  if (configured && configured !== 'MY_APP_URL' && /^https?:\/\//i.test(configured)) {
+    return configured.replace(/\/+$/, '');
+  }
+  const forwardedProto = String(req.headers['x-forwarded-proto'] || '')
+    .split(',')[0]
+    .trim()
+    .toLowerCase();
+  const proto = forwardedProto === 'https' || forwardedProto === 'http' ? forwardedProto : req.protocol || 'https';
+  const host = String(req.headers['x-forwarded-host'] || req.get('host') || 'localhost:3000')
+    .split(',')[0]
+    .trim();
+  return `${proto}://${host}`;
 }
 
 function normalizeVideoRow(row: Record<string, any> | undefined | null) {
@@ -138,6 +159,253 @@ app.get('/api/health', (_req, res) => {
   });
 });
 
+// ==================== PUBLIC SITE BRANDING, ICON & MANIFEST ====================
+
+export interface PublicSiteConfig {
+  appName: string;
+  shortName: string;
+  companyName: string;
+  tagline: string;
+  heroHeadline: string;
+  heroDescription: string;
+  metaDescription: string;
+  footerText: string;
+  supportEmail: string;
+  logoUrl: string;
+  iconUrl: string;
+  themeColor: string;
+  splashEnabled: boolean;
+  splashTitle: string;
+  splashSubtitle: string;
+  splashBgColor: string;
+  splashTextColor: string;
+  splashAccentColor: string;
+  splashDurationMs: number;
+  splashImageUrl: string;
+  welcomeNotifTitle: string;
+  welcomeNotifMessage: string;
+  announcementBanner: string;
+  registrationsOpen: boolean;
+  updatedAt: string;
+}
+
+const DEFAULT_SITE_CONFIG: PublicSiteConfig = {
+  appName: 'Vantage Reach',
+  shortName: 'VantageReach',
+  companyName: 'Vantage Talent Search Global',
+  tagline: 'Grow · Rank · Earn Globally',
+  heroHeadline: 'Your YouTube Growth Partner — Smarter, Measurable, Global.',
+  heroDescription:
+    'Submit your YouTube videos, preserve immutable baseline performance snapshots, benchmark real search competitors, and generate structured Gemini SEO recommendations alongside legitimate promotion campaigns.',
+  metaDescription:
+    'International YouTube creator discovery, legitimate promotion campaign management, competitor research, and Gemini-powered SEO intelligence by Vantage Talent Search Global.',
+  footerText: 'Vantage Reach · Operated by Vantage Talent Search Global',
+  supportEmail: 'support@vantagereach.global',
+  logoUrl: '',
+  iconUrl: '',
+  themeColor: '#2563EB',
+  splashEnabled: true,
+  splashTitle: 'Vantage Reach',
+  splashSubtitle: 'YouTube Creator Growth & SEO Intelligence',
+  splashBgColor: '#FFFFFF',
+  splashTextColor: '#0F172A',
+  splashAccentColor: '#2563EB',
+  splashDurationMs: 900,
+  splashImageUrl: '',
+  welcomeNotifTitle: 'Welcome to Vantage Reach',
+  welcomeNotifMessage:
+    'Welcome to Vantage Reach, {name}! We are excited to help grow your channel globally. Submit your first YouTube video to lock in a live baseline snapshot, compare search competitors, and unlock Gemini SEO insights.',
+  announcementBanner: '',
+  registrationsOpen: true,
+  updatedAt: '',
+};
+
+function sanitizeHexColor(val: unknown, fallback: string): string {
+  const s = String(val ?? '').trim();
+  if (/^#[0-9A-Fa-f]{6}$/.test(s)) return s.toUpperCase();
+  if (/^#[0-9A-Fa-f]{3}$/.test(s)) {
+    return `#${s[1]}${s[1]}${s[2]}${s[2]}${s[3]}${s[3]}`.toUpperCase();
+  }
+  return fallback;
+}
+
+function sanitizeSiteMediaUrl(val: unknown, fieldName: string): string {
+  const raw = String(val ?? '').trim();
+  if (!raw) return '';
+  if (raw.startsWith('/')) {
+    if (raw.startsWith('//') || raw.includes('..') || raw.length > 300) {
+      throw new Error(`${fieldName} contains an invalid relative path.`);
+    }
+    return raw;
+  }
+  if (raw.startsWith('https://')) {
+    let parsed: URL;
+    try {
+      parsed = new URL(raw);
+    } catch {
+      throw new Error(`${fieldName} must be a valid HTTPS URL.`);
+    }
+    if (parsed.protocol !== 'https:' || raw.length > 500) {
+      throw new Error(`${fieldName} must use HTTPS and be under 500 characters.`);
+    }
+    return parsed.toString();
+  }
+  if (raw.startsWith('data:image/')) {
+    if (!/^data:image\/(png|jpeg|jpg|webp);base64,[A-Za-z0-9+/=]+$/.test(raw)) {
+      throw new Error(`${fieldName} image upload must be a PNG, JPEG, or WebP image.`);
+    }
+    if (raw.length > 1_500_000) {
+      throw new Error(`${fieldName} uploaded image is too large (max ~1 MB).`);
+    }
+    return raw;
+  }
+  throw new Error(`${fieldName} must be an uploaded PNG/JPG/WebP image, a root path (/...), or an HTTPS URL.`);
+}
+
+async function getPublicSiteConfig(): Promise<PublicSiteConfig> {
+  const rows = await db.queryAll<{ key: string; value: string; updated_at: string }>(
+    `SELECT key, value, updated_at FROM system_settings
+     WHERE key LIKE 'site_%' OR key IN ('company_name', 'support_email')`
+  );
+  const map = new Map<string, string>();
+  let latestUpdated = '';
+  for (const r of rows) {
+    map.set(r.key, r.value ?? '');
+    if (r.updated_at && r.updated_at > latestUpdated) latestUpdated = r.updated_at;
+  }
+  const str = (k: string, fb: string) => {
+    const v = map.get(k);
+    return v !== undefined && v.trim() !== '' ? v.trim() : fb;
+  };
+  const optStr = (k: string, fb: string) => {
+    const v = map.get(k);
+    return v !== undefined ? v.trim() : fb;
+  };
+  const durationRaw = Number(map.get('site_splash_duration_ms') ?? DEFAULT_SITE_CONFIG.splashDurationMs);
+  const splashDurationMs = Number.isFinite(durationRaw) ? Math.min(4000, Math.max(0, Math.round(durationRaw))) : 900;
+
+  return {
+    appName: str('site_app_name', DEFAULT_SITE_CONFIG.appName),
+    shortName: str('site_short_name', DEFAULT_SITE_CONFIG.shortName),
+    companyName: str('company_name', DEFAULT_SITE_CONFIG.companyName),
+    tagline: str('site_tagline', DEFAULT_SITE_CONFIG.tagline),
+    heroHeadline: str('site_hero_headline', DEFAULT_SITE_CONFIG.heroHeadline),
+    heroDescription: str('site_hero_description', DEFAULT_SITE_CONFIG.heroDescription),
+    metaDescription: str('site_meta_description', DEFAULT_SITE_CONFIG.metaDescription),
+    footerText: str('site_footer_text', DEFAULT_SITE_CONFIG.footerText),
+    supportEmail: str('support_email', DEFAULT_SITE_CONFIG.supportEmail),
+    logoUrl: optStr('site_logo_url', ''),
+    iconUrl: optStr('site_icon_url', ''),
+    themeColor: sanitizeHexColor(map.get('site_theme_color'), DEFAULT_SITE_CONFIG.themeColor),
+    splashEnabled: (map.get('site_splash_enabled') ?? '1') !== '0',
+    splashTitle: str('site_splash_title', str('site_app_name', DEFAULT_SITE_CONFIG.splashTitle)),
+    splashSubtitle: str('site_splash_subtitle', DEFAULT_SITE_CONFIG.splashSubtitle),
+    splashBgColor: sanitizeHexColor(map.get('site_splash_bg_color'), DEFAULT_SITE_CONFIG.splashBgColor),
+    splashTextColor: sanitizeHexColor(map.get('site_splash_text_color'), DEFAULT_SITE_CONFIG.splashTextColor),
+    splashAccentColor: sanitizeHexColor(map.get('site_splash_accent_color'), DEFAULT_SITE_CONFIG.splashAccentColor),
+    splashDurationMs,
+    splashImageUrl: optStr('site_splash_image_url', ''),
+    welcomeNotifTitle: str('site_welcome_notif_title', DEFAULT_SITE_CONFIG.welcomeNotifTitle),
+    welcomeNotifMessage: str('site_welcome_notif_message', DEFAULT_SITE_CONFIG.welcomeNotifMessage),
+    announcementBanner: optStr('site_announcement_banner', ''),
+    registrationsOpen: (map.get('site_registrations_open') ?? '1') !== '0',
+    updatedAt: latestUpdated,
+  };
+}
+
+function formatWelcomeMessage(template: string, name: string): string {
+  const safeName = (name || '').trim() || 'Creator';
+  if (template.includes('{name}')) {
+    return template.replace(/\{name\}/g, safeName);
+  }
+  return template;
+}
+
+app.get(
+  '/api/site-config',
+  asyncHandler(async (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    const config = await getPublicSiteConfig();
+    res.json({ config });
+  })
+);
+
+app.get(
+  '/api/site-icon.png',
+  asyncHandler(async (req, res) => {
+    const config = await getPublicSiteConfig();
+    res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+    const icon = config.iconUrl;
+    const match = icon.match(/^data:image\/(png|jpeg|jpg|webp);base64,([A-Za-z0-9+/=]+)$/);
+    if (match) {
+      const mime = match[1] === 'jpg' ? 'jpeg' : match[1];
+      res.setHeader('Content-Type', `image/${mime}`);
+      return res.send(Buffer.from(match[2], 'base64'));
+    }
+    if (icon.startsWith('https://')) {
+      return res.redirect(302, icon);
+    }
+    const size = String(req.query.size || '') === '512' ? 'pwa-512x512.png' : 'pwa-192x192.png';
+    const localRel = icon.startsWith('/') ? icon.slice(1) : size;
+    const publicDir = path.resolve(process.cwd(), 'public');
+    const candidate = path.resolve(publicDir, localRel);
+    const fallback = path.resolve(publicDir, size);
+    const target = candidate.startsWith(publicDir + path.sep) && fs.existsSync(candidate) ? candidate : fallback;
+    if (fs.existsSync(target)) {
+      return res.sendFile(target);
+    }
+    res.status(404).end();
+  })
+);
+
+async function sendDynamicManifest(res: express.Response) {
+  const config = await getPublicSiteConfig();
+  const v = encodeURIComponent(config.updatedAt || '1');
+  res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  res.json({
+    id: '/',
+    name: config.appName,
+    short_name: config.shortName.slice(0, 16),
+    description: config.metaDescription,
+    theme_color: config.themeColor,
+    background_color: config.splashBgColor,
+    display: 'standalone',
+    orientation: 'any',
+    prefer_related_applications: false,
+    categories: ['business', 'productivity'],
+    start_url: '/',
+    scope: '/',
+    icons: [
+      {
+        src: `/api/site-icon.png?size=192&v=${v}`,
+        sizes: '192x192',
+        type: 'image/png',
+        purpose: 'any',
+      },
+      {
+        src: `/api/site-icon.png?size=512&v=${v}`,
+        sizes: '512x512',
+        type: 'image/png',
+        purpose: 'any',
+      },
+      {
+        src: config.iconUrl ? `/api/site-icon.png?size=512&v=${v}` : '/pwa-maskable-512x512.png',
+        sizes: '512x512',
+        type: 'image/png',
+        purpose: 'maskable',
+      },
+    ],
+  });
+}
+
+app.get(
+  '/api/manifest.webmanifest',
+  asyncHandler(async (_req, res) => {
+    await sendDynamicManifest(res);
+  })
+);
+
 // ==================== SITE VISITOR TELEMETRY ====================
 
 app.post(
@@ -181,9 +449,18 @@ app.post(
       return res.status(409).json({ error: 'An account with this email already exists.' });
     }
 
+    const siteConfig = await getPublicSiteConfig();
+    if (!siteConfig.registrationsOpen) {
+      return res.status(403).json({
+        error: 'New creator account registrations are currently paused by the site administrator.',
+      });
+    }
+
     const passwordHash = hashPasswordSync(password);
     const trimmedName = String(fullName || cleanEmail.split('@')[0]).trim();
     const trimmedCountry = String(country || 'United States').trim();
+    const welcomeTitle = siteConfig.welcomeNotifTitle;
+    const welcomeBody = formatWelcomeMessage(siteConfig.welcomeNotifMessage, trimmedName);
 
     const userId = await db.transaction(async (tx) => {
       const uid = await tx.insert(`INSERT INTO users (email, password_hash) VALUES (?, ?)`, [
@@ -197,11 +474,8 @@ app.post(
       ]);
       await tx.execute(
         `INSERT INTO notifications (user_id, title, message, category, link_path)
-         VALUES (?, 'Welcome to Vantage Reach', ?, 'system', '/submit')`,
-        [
-          uid,
-          `Welcome to Vantage Reach, ${trimmedName || 'Creator'}! We are excited to help grow your channel globally. Submit your first YouTube video to lock in a live baseline snapshot, compare search competitors, and unlock Gemini SEO insights.`,
-        ]
+         VALUES (?, ?, ?, 'system', '/submit')`,
+        [uid, welcomeTitle, welcomeBody]
       );
       return uid;
     });
@@ -219,6 +493,8 @@ app.post(
         isAdmin: false,
         adminRole: null,
         permissions: [],
+        isVip: false,
+        vipExpiresAt: null,
       },
     });
   })
@@ -236,6 +512,8 @@ app.post(
 
     const row = await db.queryOne<Record<string, any>>(
       `SELECT u.id, u.email, u.password_hash, u.status, COALESCE(p.full_name, '') AS full_name,
+              COALESCE(p.vip_status, 'none') AS vip_status,
+              COALESCE(p.vip_expires_at, '') AS vip_expires_at,
               a.id AS admin_id, r.name AS role_name, r.permissions_json
        FROM users u
        LEFT JOIN user_profiles p ON p.user_id = u.id
@@ -266,6 +544,9 @@ app.post(
       }
     }
 
+    const vipExpiry = row.vip_expires_at ? String(row.vip_expires_at).trim() : '';
+    const isVip = row.vip_status === 'active' && (!vipExpiry || new Date(vipExpiry).getTime() > Date.now());
+
     res.json({
       sessionToken: token,
       user: {
@@ -275,6 +556,8 @@ app.post(
         isAdmin: Boolean(row.admin_id),
         adminRole: row.role_name || null,
         permissions,
+        isVip,
+        vipExpiresAt: vipExpiry || null,
       },
     });
   })
@@ -457,12 +740,14 @@ app.get(
     );
     if (rows.length === 0 && !req.user!.isAdmin) {
       const displayName = (req.user!.fullName || '').trim() || 'Creator';
+      const siteConfig = await getPublicSiteConfig();
       await db.execute(
         `INSERT INTO notifications (user_id, title, message, category, link_path)
-         VALUES (?, 'Welcome to Vantage Reach', ?, 'system', '/submit')`,
+         VALUES (?, ?, ?, 'system', '/submit')`,
         [
           req.user!.id,
-          `Welcome to Vantage Reach, ${displayName}! We are excited to help grow your channel globally. Submit your first YouTube video to lock in a live baseline snapshot, compare search competitors, and unlock Gemini SEO insights.`,
+          siteConfig.welcomeNotifTitle,
+          formatWelcomeMessage(siteConfig.welcomeNotifMessage, displayName),
         ]
       );
       rows = await db.queryAll(
@@ -557,7 +842,7 @@ app.get(
         [uid]
       ),
       db.queryAll(
-        `SELECT c.*, v.title AS video_title, v.thumbnail_url, v.youtube_video_id, p.name AS package_name
+        `SELECT c.*, v.title AS video_title, v.url AS video_url, v.channel_url, v.thumbnail_url, v.youtube_video_id, p.name AS package_name
          FROM campaigns c
          JOIN videos v ON v.id = c.video_id
          LEFT JOIN packages p ON p.id = c.package_id
@@ -614,7 +899,7 @@ app.post(
   requireAuth,
   asyncHandler(async (req: AuthRequest, res) => {
     try {
-      const { url } = req.body || {};
+      const { url, channelUrl, title } = req.body || {};
       const parsed = extractYouTubeVideoId(String(url || ''));
       if (!parsed.valid || !parsed.videoId) {
         return res.status(400).json({
@@ -622,7 +907,16 @@ app.post(
           code: parsed.errorCode || 'INVALID_URL',
         });
       }
-      const details = await fetchYouTubeVideoDetails(parsed.videoId);
+      const chCheck = channelUrl ? validateYouTubeChannelUrl(String(channelUrl)) : null;
+      if (chCheck && !chCheck.valid) {
+        return res.status(400).json({ error: chCheck.error || 'Invalid YouTube channel link.', code: 'INVALID_URL' });
+      }
+      const details = await fetchYouTubeSubmissionDetails({
+        videoId: parsed.videoId,
+        channelUrl: chCheck?.canonicalUrl || undefined,
+        channelNameGuess: chCheck?.channelNameGuess || undefined,
+        customTitle: typeof title === 'string' ? title : undefined,
+      });
       res.json({ preview: details });
     } catch (err: any) {
       const status = typeof err.status === 'number' ? err.status : 400;
@@ -639,7 +933,7 @@ app.post(
   requireAuth,
   asyncHandler(async (req: AuthRequest, res) => {
     try {
-      const { url } = req.body || {};
+      const { url, channelUrl, title } = req.body || {};
       const parsed = extractYouTubeVideoId(String(url || ''));
       if (!parsed.valid || !parsed.videoId) {
         return res.status(400).json({
@@ -648,28 +942,54 @@ app.post(
         });
       }
 
-      const existing = await db.queryOne<{ id: number }>(
-        `SELECT id FROM videos WHERE user_id = ? AND youtube_video_id = ?`,
+      const chCheck = validateYouTubeChannelUrl(String(channelUrl || ''));
+      if (!chCheck.valid || !chCheck.canonicalUrl) {
+        return res.status(400).json({
+          error: chCheck.error || 'Please paste a valid YouTube channel link.',
+          code: 'INVALID_CHANNEL_URL',
+        });
+      }
+
+      const customTitle = typeof title === 'string' ? title.trim().slice(0, 180) : '';
+
+      const existing = await db.queryOne<Record<string, any>>(
+        `SELECT * FROM videos WHERE user_id = ? AND youtube_video_id = ?`,
         [req.user!.id, parsed.videoId]
       );
 
       if (existing) {
+        await db.execute(
+          `UPDATE videos
+           SET channel_url = ?,
+               title = CASE WHEN ? != '' THEN ? ELSE title END,
+               updated_at = ${sqlNow()}
+           WHERE id = ?`,
+          [chCheck.canonicalUrl, customTitle, customTitle, Number(existing.id)]
+        );
+        const refreshed = await db.queryOne<Record<string, any>>(`SELECT * FROM videos WHERE id = ?`, [
+          Number(existing.id),
+        ]);
         return res.status(409).json({
-          error:
-            'You have already submitted this video. Open it from Video Intelligence to refresh snapshots or run SEO analysis.',
+          error: 'This video link is already saved on your account. You can promote it now with $1 membership.',
           existingVideoId: Number(existing.id),
+          existingVideo: normalizeVideoRow(refreshed),
         });
       }
 
-      const details = await fetchYouTubeVideoDetails(parsed.videoId);
+      const details = await fetchYouTubeSubmissionDetails({
+        videoId: parsed.videoId,
+        channelUrl: chCheck.canonicalUrl,
+        channelNameGuess: chCheck.channelNameGuess,
+        customTitle: customTitle || undefined,
+      });
 
       const videoId = await db.transaction(async (tx) => {
         const newVideoId = await tx.insert(
           `INSERT INTO videos (
-             user_id, youtube_video_id, url, title, description, channel_id, channel_name,
+             user_id, youtube_video_id, url, title, description, channel_id, channel_name, channel_url,
              thumbnail_url, duration, published_at, latest_views, latest_likes, latest_comments,
              latest_subscribers, subscribers_hidden, stats_source, last_synced_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${sqlNow()})`,
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${sqlNow()})`,
           [
             req.user!.id,
             details.youtubeVideoId,
@@ -678,6 +998,7 @@ app.post(
             details.description,
             details.channelId,
             details.channelName,
+            details.channelUrl || chCheck.canonicalUrl,
             details.thumbnailUrl,
             details.duration,
             details.publishedAt,
@@ -690,7 +1011,6 @@ app.post(
           ]
         );
 
-        // Immutable baseline snapshot
         await tx.execute(
           `INSERT INTO video_snapshots (
              video_id, user_id, campaign_id, is_baseline, original_title, original_description,
@@ -712,11 +1032,11 @@ app.post(
 
         await tx.execute(
           `INSERT INTO notifications (user_id, title, message, category, link_path)
-           VALUES (?, 'Video Baseline Recorded', ?, 'video', ?)`,
+           VALUES (?, 'Video & Channel Link Submitted', ?, 'video', ?)`,
           [
             req.user!.id,
-            `Immutable baseline statistics captured for "${details.title}".`,
-            `/videos/${newVideoId}`,
+            `Your video link and channel link (${chCheck.canonicalUrl}) are saved and ready to promote.`,
+            '/campaigns',
           ]
         );
 
@@ -728,7 +1048,7 @@ app.post(
     } catch (err: any) {
       const status = typeof err.status === 'number' ? err.status : 400;
       res.status(status).json({
-        error: err.message || 'Failed to submit YouTube video.',
+        error: err.message || 'Failed to submit YouTube video and channel links.',
         code: err.code || 'SUBMISSION_FAILED',
       });
     }
@@ -1189,20 +1509,28 @@ app.get(
 app.get(
   '/api/packages',
   asyncHandler(async (_req, res) => {
-    const [rows, defaultProvider] = await Promise.all([
+    const [rows, gatewayStatus] = await Promise.all([
       db.queryAll<Record<string, any>>(`SELECT * FROM packages WHERE is_active = 1 ORDER BY sort_order ASC, id ASC`),
-      getActiveDefaultProvider(),
+      getPaymentGatewayStatus(),
     ]);
     const packages = rows.map((r) => ({
       ...r,
       id: Number(r.id),
+      code: String(r.code || ''),
       duration_days: Number(r.duration_days || 0),
       price_usd: Number(r.price_usd || 0),
       price_ngn: Number(r.price_ngn || 0),
       is_active: Number(r.is_active || 0),
       deliverables: JSON.parse(r.deliverables_json || '[]'),
     }));
-    res.json({ packages, defaultProvider });
+    const vipPackage = packages.find((p) => p.code === 'vip_membership') || null;
+    res.json({
+      packages,
+      vipPackage,
+      defaultProvider: gatewayStatus.defaultProvider,
+      flutterwaveConfigured: gatewayStatus.flutterwaveConfigured,
+      paystackConfigured: gatewayStatus.paystackConfigured,
+    });
   })
 );
 
@@ -1268,7 +1596,10 @@ app.post(
           return cid;
         });
 
-        const appUrl = process.env.APP_URL || `${req.protocol}://${req.get('host')}`;
+        const appUrl = getAppBaseUrl(req);
+        const siteCfg = await getPublicSiteConfig();
+        const isVipPkg = pkg.code === 'vip_membership' || String(pkg.code || '').startsWith('vip_');
+        const returnTab = isVipPkg ? 'intelligence' : 'campaigns';
         const init = await initializePayment({
           userId: req.user!.id,
           email: req.user!.email,
@@ -1277,8 +1608,8 @@ app.post(
           currency: chosenCurrency,
           provider: chosenProvider,
           idempotencyKey: idemKey,
-          callbackUrl: `${appUrl}/?tab=campaigns`,
-          description: `Vantage Reach ${pkg.name}`,
+          callbackUrl: `${appUrl}/?tab=${returnTab}`,
+          description: `${siteCfg.appName} — ${pkg.name}`,
         });
 
         return res.status(201).json({
@@ -1321,7 +1652,8 @@ app.post(
           });
         }
 
-        const appUrl = process.env.APP_URL || `${req.protocol}://${req.get('host')}`;
+        const appUrl = getAppBaseUrl(req);
+        const siteCfg = await getPublicSiteConfig();
         const init = await initializePayment({
           userId: req.user!.id,
           email: req.user!.email,
@@ -1331,7 +1663,7 @@ app.post(
           provider: chosenProvider,
           idempotencyKey: idemKey,
           callbackUrl: `${appUrl}/?tab=seo`,
-          description: `Vantage Reach ${pkg.name}`,
+          description: `${siteCfg.appName} — ${pkg.name}`,
         });
 
         return res.status(201).json({
@@ -1379,7 +1711,7 @@ app.post(
   '/api/payments/webhook/:provider',
   asyncHandler(async (req: any, res) => {
     const provider = String(req.params.provider || '').toLowerCase();
-    const isValid = verifyWebhookSignature(provider, req.rawBody || '', req.headers);
+    const isValid = await verifyWebhookSignature(provider, req.rawBody || '', req.headers);
     if (!isValid) {
       return res.status(401).json({ error: 'Invalid webhook signature.' });
     }
@@ -1428,7 +1760,7 @@ app.get(
   requireAuth,
   asyncHandler(async (req: AuthRequest, res) => {
     const campaigns = await db.queryAll<Record<string, any>>(
-      `SELECT c.*, v.title AS video_title, v.thumbnail_url, v.youtube_video_id, v.latest_views,
+      `SELECT c.*, v.title AS video_title, v.url AS video_url, v.channel_url, v.channel_name, v.thumbnail_url, v.youtube_video_id, v.latest_views,
               p.name AS package_name,
               (SELECT tx_ref FROM payments pay WHERE pay.campaign_id = c.id ORDER BY pay.id DESC LIMIT 1) AS latest_tx_ref
        FROM campaigns c
@@ -1456,7 +1788,7 @@ app.get(
   asyncHandler(async (req: AuthRequest, res) => {
     const cid = Number(req.params.id);
     const campaign = await db.queryOne<Record<string, any>>(
-      `SELECT c.*, v.title AS video_title, v.thumbnail_url, v.youtube_video_id, v.channel_name,
+      `SELECT c.*, v.title AS video_title, v.url AS video_url, v.channel_url, v.thumbnail_url, v.youtube_video_id, v.channel_name,
               v.latest_views, v.latest_likes, v.latest_comments, v.latest_subscribers, v.subscribers_hidden,
               p.name AS package_name
        FROM campaigns c
@@ -1769,6 +2101,49 @@ app.patch(
   })
 );
 
+app.patch(
+  '/api/admin/customers/:id',
+  requireAuth,
+  requireAdmin('customers:manage'),
+  asyncHandler(async (req: AuthRequest, res) => {
+    const targetId = Number(req.params.id);
+    const { fullName, country, status } = req.body || {};
+    const existing = await db.queryOne<{ id: number; status: string }>(`SELECT id, status FROM users WHERE id = ?`, [
+      targetId,
+    ]);
+    if (!existing) return res.status(404).json({ error: 'Customer not found.' });
+    const nextStatus = status === 'suspended' ? 'suspended' : status === 'active' ? 'active' : existing.status;
+
+    await db.transaction(async (tx) => {
+      await tx.execute(`UPDATE users SET status = ?, updated_at = ${sqlNow()} WHERE id = ?`, [nextStatus, targetId]);
+      if (fullName !== undefined || country !== undefined) {
+        await tx.execute(
+          `UPDATE user_profiles
+           SET full_name = COALESCE(?, full_name),
+               country = COALESCE(?, country),
+               updated_at = ${sqlNow()}
+           WHERE user_id = ?`,
+          [
+            fullName !== undefined ? String(fullName).trim().slice(0, 120) : null,
+            country !== undefined ? String(country).trim().slice(0, 80) : null,
+            targetId,
+          ]
+        );
+      }
+    });
+    await writeAuditLog(
+      req.user!.id,
+      req.user!.email,
+      'customer_updated',
+      'user',
+      targetId,
+      { status: nextStatus },
+      req.ip || ''
+    );
+    res.json({ ok: true });
+  })
+);
+
 app.get(
   '/api/admin/videos',
   requireAuth,
@@ -1846,7 +2221,7 @@ app.get(
   requireAdmin('campaigns:manage'),
   asyncHandler(async (_req, res) => {
     const campaigns = await db.queryAll(
-      `SELECT c.*, u.email AS customer_email, v.title AS video_title, v.thumbnail_url, p.name AS package_name
+      `SELECT c.*, u.email AS customer_email, v.title AS video_title, v.url AS video_url, v.channel_url, v.channel_name, v.thumbnail_url, p.name AS package_name
        FROM campaigns c
        JOIN users u ON u.id = c.user_id
        JOIN videos v ON v.id = c.video_id
@@ -2186,6 +2561,55 @@ app.get(
   })
 );
 
+app.post(
+  '/api/admin/packages',
+  requireAuth,
+  requireAdmin('pricing:manage'),
+  asyncHandler(async (req: AuthRequest, res) => {
+    const { code, kind, name, description, durationDays, priceUsd, priceNgn, deliverables, isActive } = req.body || {};
+    const cleanName = String(name || '').trim();
+    if (!cleanName) return res.status(400).json({ error: 'Package name is required.' });
+    const cleanKind = kind === 'seo_service' ? 'seo_service' : 'promotion';
+    const rawCode = String(code || cleanName)
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .slice(0, 40);
+    const finalCode = rawCode || `pkg_${Date.now().toString(36)}`;
+    const existing = await db.queryOne<{ id: number }>(`SELECT id FROM packages WHERE code = ?`, [finalCode]);
+    if (existing) {
+      return res.status(409).json({ error: `A package with code "${finalCode}" already exists.` });
+    }
+    const pkgId = await db.insert(
+      `INSERT INTO packages (code, kind, name, description, duration_days, price_usd, price_ngn, deliverables_json, is_active, sort_order)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        finalCode,
+        cleanKind,
+        cleanName,
+        String(description || '').trim(),
+        Math.max(0, Number(durationDays || 0)),
+        Math.max(0, Number(priceUsd || 0)),
+        Math.max(0, Number(priceNgn || 0)),
+        JSON.stringify(Array.isArray(deliverables) ? deliverables.map((d) => String(d).trim()).filter(Boolean) : []),
+        isActive === false ? 0 : 1,
+        cleanKind === 'promotion' ? 5 : 20,
+      ]
+    );
+    await writeAuditLog(
+      req.user!.id,
+      req.user!.email,
+      'package_created',
+      'package',
+      pkgId,
+      { code: finalCode, name: cleanName },
+      req.ip || ''
+    );
+    res.status(201).json({ ok: true, id: pkgId });
+  })
+);
+
 app.put(
   '/api/admin/packages/:id',
   requireAuth,
@@ -2219,6 +2643,32 @@ app.put(
       req.ip || ''
     );
     res.json({ ok: true });
+  })
+);
+
+app.get(
+  '/api/admin/notifications',
+  requireAuth,
+  requireAdmin('notifications:manage'),
+  asyncHandler(async (_req, res) => {
+    const [recent, customers] = await Promise.all([
+      db.queryAll(
+        `SELECT n.id, n.title, n.message, n.category, n.link_path, n.created_at, u.email AS recipient_email
+         FROM notifications n
+         JOIN users u ON u.id = n.user_id
+         ORDER BY n.created_at DESC, n.id DESC
+         LIMIT 35`
+      ),
+      db.queryAll(
+        `SELECT u.id, u.email, COALESCE(p.full_name, '') AS full_name
+         FROM users u
+         LEFT JOIN user_profiles p ON p.user_id = u.id
+         WHERE u.status = 'active'
+         ORDER BY u.id DESC
+         LIMIT 200`
+      ),
+    ]);
+    res.json({ recent, customers });
   })
 );
 
@@ -2262,6 +2712,167 @@ app.post(
   })
 );
 
+app.put(
+  '/api/admin/site-config',
+  requireAuth,
+  requireAdmin('settings:site'),
+  asyncHandler(async (req: AuthRequest, res) => {
+    const body = req.body || {};
+    const textVal = (val: unknown, fallback: string, maxLen: number) => {
+      const s = String(val ?? '').trim();
+      return (s || fallback).slice(0, maxLen);
+    };
+    const optionalTextVal = (val: unknown, maxLen: number) => String(val ?? '').trim().slice(0, maxLen);
+
+    let logoUrl = '';
+    let iconUrl = '';
+    let splashImageUrl = '';
+    try {
+      logoUrl = sanitizeSiteMediaUrl(body.logoUrl, 'Site Logo');
+      iconUrl = sanitizeSiteMediaUrl(body.iconUrl, 'App Icon');
+      splashImageUrl = sanitizeSiteMediaUrl(body.splashImageUrl, 'Splash Image');
+    } catch (err: any) {
+      return res.status(400).json({ error: err.message || 'Invalid branding image URL.' });
+    }
+
+    const appName = textVal(body.appName, DEFAULT_SITE_CONFIG.appName, 80);
+    const shortName = textVal(body.shortName, appName.slice(0, 12), 20);
+    const durationNum = Number(body.splashDurationMs ?? DEFAULT_SITE_CONFIG.splashDurationMs);
+    const splashDurationMs = Number.isFinite(durationNum) ? Math.min(4000, Math.max(0, Math.round(durationNum))) : 900;
+
+    const pairs: Array<[string, string]> = [
+      ['site_app_name', appName],
+      ['site_short_name', shortName],
+      ['company_name', textVal(body.companyName, DEFAULT_SITE_CONFIG.companyName, 120)],
+      ['site_tagline', textVal(body.tagline, DEFAULT_SITE_CONFIG.tagline, 120)],
+      ['site_hero_headline', textVal(body.heroHeadline, DEFAULT_SITE_CONFIG.heroHeadline, 180)],
+      ['site_hero_description', textVal(body.heroDescription, DEFAULT_SITE_CONFIG.heroDescription, 600)],
+      ['site_meta_description', textVal(body.metaDescription, DEFAULT_SITE_CONFIG.metaDescription, 400)],
+      ['site_footer_text', textVal(body.footerText, DEFAULT_SITE_CONFIG.footerText, 160)],
+      ['support_email', textVal(body.supportEmail, DEFAULT_SITE_CONFIG.supportEmail, 120)],
+      ['site_logo_url', logoUrl],
+      ['site_icon_url', iconUrl],
+      ['site_theme_color', sanitizeHexColor(body.themeColor, DEFAULT_SITE_CONFIG.themeColor)],
+      ['site_splash_enabled', body.splashEnabled === false ? '0' : '1'],
+      ['site_splash_title', textVal(body.splashTitle, appName, 80)],
+      ['site_splash_subtitle', textVal(body.splashSubtitle, DEFAULT_SITE_CONFIG.splashSubtitle, 140)],
+      ['site_splash_bg_color', sanitizeHexColor(body.splashBgColor, DEFAULT_SITE_CONFIG.splashBgColor)],
+      ['site_splash_text_color', sanitizeHexColor(body.splashTextColor, DEFAULT_SITE_CONFIG.splashTextColor)],
+      ['site_splash_accent_color', sanitizeHexColor(body.splashAccentColor, DEFAULT_SITE_CONFIG.splashAccentColor)],
+      ['site_splash_duration_ms', String(splashDurationMs)],
+      ['site_splash_image_url', splashImageUrl],
+      ['site_welcome_notif_title', textVal(body.welcomeNotifTitle, DEFAULT_SITE_CONFIG.welcomeNotifTitle, 120)],
+      ['site_welcome_notif_message', textVal(body.welcomeNotifMessage, DEFAULT_SITE_CONFIG.welcomeNotifMessage, 600)],
+      ['site_announcement_banner', optionalTextVal(body.announcementBanner, 240)],
+      ['site_registrations_open', body.registrationsOpen === false ? '0' : '1'],
+    ];
+
+    const nowExpr = sqlNow();
+    await db.transaction(async (tx) => {
+      for (const [k, v] of pairs) {
+        await tx.execute(
+          `INSERT INTO system_settings (key, value, is_secret, description, updated_by, updated_at)
+           VALUES (?, ?, 0, ?, ?, ${nowExpr})
+           ON CONFLICT (key) DO UPDATE
+           SET value = excluded.value, updated_by = excluded.updated_by, updated_at = ${nowExpr}`,
+          [k, v, k, req.user!.id]
+        );
+      }
+    });
+
+    await writeAuditLog(
+      req.user!.id,
+      req.user!.email,
+      'site_branding_updated',
+      'system_setting',
+      'site_config',
+      { appName, shortName, splashEnabled: body.splashEnabled !== false },
+      req.ip || ''
+    );
+    const config = await getPublicSiteConfig();
+    res.json({ ok: true, config });
+  })
+);
+
+app.put(
+  '/api/admin/owner-account',
+  requireAuth,
+  requireAdmin(),
+  asyncHandler(async (req: AuthRequest, res) => {
+    if (req.user!.adminRole !== 'super_admin') {
+      return res.status(403).json({ error: 'Only the super administrator / site owner can update owner credentials.' });
+    }
+    const { email, fullName, currentPassword, newPassword } = req.body || {};
+    const cleanEmail = String(email || req.user!.email).trim().toLowerCase();
+    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      return res.status(400).json({ error: 'Please enter a valid owner email address.' });
+    }
+    const cleanName = String(fullName ?? req.user!.fullName ?? '').trim().slice(0, 120);
+    const row = await db.queryOne<{ id: number; email: string; password_hash: string }>(
+      `SELECT id, email, password_hash FROM users WHERE id = ?`,
+      [req.user!.id]
+    );
+    if (!row) return res.status(404).json({ error: 'Owner account not found.' });
+
+    const changingSensitive = cleanEmail !== row.email || Boolean(newPassword);
+    if (changingSensitive) {
+      if (!currentPassword || !verifyPasswordSync(String(currentPassword), row.password_hash)) {
+        return res.status(400).json({ error: 'Current password is required to change your owner email or password.' });
+      }
+    }
+    if (newPassword && (typeof newPassword !== 'string' || newPassword.length < 8)) {
+      return res.status(400).json({ error: 'New password must be at least 8 characters long.' });
+    }
+    if (cleanEmail !== row.email) {
+      const taken = await db.queryOne<{ id: number }>(`SELECT id FROM users WHERE email = ? AND id != ?`, [
+        cleanEmail,
+        req.user!.id,
+      ]);
+      if (taken) {
+        return res.status(409).json({ error: 'Another user account already uses that email address.' });
+      }
+    }
+
+    const nowExpr = sqlNow();
+    await db.transaction(async (tx) => {
+      if (newPassword) {
+        await tx.execute(`UPDATE users SET email = ?, password_hash = ?, updated_at = ${nowExpr} WHERE id = ?`, [
+          cleanEmail,
+          hashPasswordSync(newPassword),
+          req.user!.id,
+        ]);
+      } else {
+        await tx.execute(`UPDATE users SET email = ?, updated_at = ${nowExpr} WHERE id = ?`, [cleanEmail, req.user!.id]);
+      }
+      await tx.execute(`UPDATE user_profiles SET full_name = ?, updated_at = ${nowExpr} WHERE user_id = ?`, [
+        cleanName,
+        req.user!.id,
+      ]);
+    });
+
+    const token = signSessionToken(req.user!.id, cleanEmail);
+    setSessionCookie(res, token, req);
+    await writeAuditLog(
+      req.user!.id,
+      cleanEmail,
+      'owner_account_updated',
+      'user',
+      req.user!.id,
+      { emailChanged: cleanEmail !== row.email, passwordChanged: Boolean(newPassword) },
+      req.ip || ''
+    );
+    res.json({
+      ok: true,
+      sessionToken: token,
+      user: {
+        ...req.user!,
+        email: cleanEmail,
+        fullName: cleanName,
+      },
+    });
+  })
+);
+
 app.get(
   '/api/admin/settings',
   requireAuth,
@@ -2296,6 +2907,21 @@ app.put(
     if (key.startsWith('youtube_') && req.user.adminRole !== 'super_admin' && !req.user.permissions.includes('settings:youtube')) {
       return res.status(403).json({ error: 'Missing settings:youtube permission.' });
     }
+    if (
+      (key.startsWith('flutterwave_') || key.startsWith('payment_')) &&
+      req.user.adminRole !== 'super_admin' &&
+      !req.user.permissions.includes('payments:manage') &&
+      !req.user.permissions.includes('settings:youtube')
+    ) {
+      return res.status(403).json({ error: 'Missing payments:manage or settings:youtube permission.' });
+    }
+    if (
+      (key.startsWith('site_') || key === 'company_name' || key === 'support_email') &&
+      req.user.adminRole !== 'super_admin' &&
+      !req.user.permissions.includes('settings:site')
+    ) {
+      return res.status(403).json({ error: 'Missing settings:site permission.' });
+    }
     next();
   },
   asyncHandler(async (req: AuthRequest, res) => {
@@ -2325,6 +2951,54 @@ app.put(
       req.ip || ''
     );
     res.json({ ok: true });
+  })
+);
+
+app.get(
+  '/api/admin/payment-gateways',
+  requireAuth,
+  requireAdmin(),
+  asyncHandler(async (_req, res) => {
+    const status = await getPaymentGatewayStatus();
+    res.json({ status });
+  })
+);
+
+app.post(
+  '/api/admin/flutterwave/test',
+  requireAuth,
+  requireAdmin(),
+  asyncHandler(async (req: AuthRequest, res) => {
+    if (
+      req.user!.adminRole !== 'super_admin' &&
+      !req.user!.permissions.includes('payments:manage') &&
+      !req.user!.permissions.includes('settings:youtube')
+    ) {
+      return res.status(403).json({ error: 'Administrator payment permission required.' });
+    }
+    const flw = await getFlutterwaveCredentials();
+    if (!flw.secretKey) {
+      return res.status(400).json({
+        error: 'Flutterwave Secret Key is not saved yet. Enter your FLWSECK key and save first.',
+      });
+    }
+    const flwRes = await fetch('https://api.flutterwave.com/v3/balances', {
+      headers: { Authorization: `Bearer ${flw.secretKey}` },
+    });
+    const flwJson = (await flwRes.json().catch(() => ({}))) as { status?: string; message?: string };
+    if (!flwRes.ok || flwJson.status !== 'success') {
+      return res.status(400).json({
+        error: flwJson.message || 'Flutterwave rejected the secret key. Check that it is valid and active.',
+      });
+    }
+    res.json({
+      ok: true,
+      connected: true,
+      mode: flw.secretKey.includes('_TEST-') ? 'test' : 'live',
+      message: flw.secretKey.includes('_TEST-')
+        ? 'Connected to Flutterwave (Test Mode).'
+        : 'Connected to Flutterwave (Live Payments Active).',
+    });
   })
 );
 
@@ -2606,6 +3280,13 @@ async function startServer() {
   await initDatabase();
 
   app.use(applyPwaNoCacheHeaders);
+
+  app.get(
+    '/manifest.webmanifest',
+    asyncHandler(async (_req, res) => {
+      await sendDynamicManifest(res);
+    })
+  );
 
   if (process.env.NODE_ENV !== 'production') {
     const vitePkg = 'vite';

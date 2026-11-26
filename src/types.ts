@@ -5,6 +5,8 @@ export interface UserSession {
   isAdmin: boolean;
   adminRole: string | null;
   permissions: string[];
+  isVip?: boolean;
+  vipExpiresAt?: string | null;
 }
 
 export interface VideoRecord {
@@ -16,6 +18,7 @@ export interface VideoRecord {
   description: string;
   channel_id: string;
   channel_name: string;
+  channel_url?: string;
   thumbnail_url: string;
   duration: string;
   published_at: string;
@@ -165,6 +168,9 @@ export interface CampaignRecord {
   target_regions: string;
   deliverables: string[];
   video_title?: string;
+  video_url?: string;
+  channel_url?: string;
+  channel_name?: string;
   thumbnail_url?: string;
   youtube_video_id?: string;
   package_name?: string;
@@ -200,3 +206,32 @@ export interface NotificationRecord {
   is_read: number;
   created_at: string;
 }
+
+export interface SiteConfig {
+  appName: string;
+  shortName: string;
+  companyName: string;
+  tagline: string;
+  heroHeadline: string;
+  heroDescription: string;
+  metaDescription: string;
+  footerText: string;
+  supportEmail: string;
+  logoUrl: string;
+  iconUrl: string;
+  themeColor: string;
+  splashEnabled: boolean;
+  splashTitle: string;
+  splashSubtitle: string;
+  splashBgColor: string;
+  splashTextColor: string;
+  splashAccentColor: string;
+  splashDurationMs: number;
+  splashImageUrl: string;
+  welcomeNotifTitle: string;
+  welcomeNotifMessage: string;
+  announcementBanner: string;
+  registrationsOpen: boolean;
+  updatedAt: string;
+}
+

@@ -12,6 +12,8 @@ import {
   ListChecks,
   LogOut,
   Menu,
+  Palette,
+  Plus,
   Rocket,
   Shield,
   Sparkles,
@@ -20,8 +22,10 @@ import {
   Video,
   X,
 } from 'lucide-react';
-import { api, formatCount, formatCurrency, formatDateTime, formatStatusLabel } from '../lib/api';
+import { api, formatCount, formatCurrency, formatDateTime, formatStatusLabel, setAuthToken } from '../lib/api';
+import { useSiteConfig } from '../lib/siteConfig';
 import type { UserSession } from '../types';
+import { AdminSiteSettingsPanel } from './AdminSiteSettingsPanel';
 import { AdminVisitorsPanel } from './AdminVisitorsPanel';
 import { VantageLogo } from './BrandMark';
 
@@ -37,13 +41,14 @@ type AdminModule =
   | 'reports'
   | 'pricing'
   | 'notifications'
+  | 'branding'
   | 'gemini'
   | 'youtube'
   | 'staff'
   | 'permissions'
   | 'audit';
 
-type AdminGroup = 'Operations' | 'Billing & Messaging' | 'System & Access';
+type AdminGroup = 'Operations' | 'Billing & Messaging' | 'Site & Access';
 
 const MODULES: Array<{
   id: AdminModule;
@@ -64,7 +69,6 @@ const MODULES: Array<{
   },
   { id: 'campaigns', label: 'Campaigns', group: 'Operations', permissions: ['campaigns:manage'], icon: Rocket },
   { id: 'tasks', label: 'Promotion Tasks', group: 'Operations', permissions: ['tasks:manage'], icon: ListChecks },
-  { id: 'seo_orders', label: 'SEO Orders', group: 'Operations', permissions: ['seo_orders:manage'], icon: Layers },
   { id: 'payments', label: 'Payments', group: 'Billing & Messaging', permissions: ['payments:manage'], icon: CreditCard },
   {
     id: 'reports',
@@ -73,7 +77,7 @@ const MODULES: Array<{
     permissions: ['reports:read', 'reports:manage'],
     icon: FileText,
   },
-  { id: 'pricing', label: 'Pricing', group: 'Billing & Messaging', permissions: ['pricing:manage'], icon: DollarSign },
+  { id: 'pricing', label: 'Pricing & Plans', group: 'Billing & Messaging', permissions: ['pricing:manage'], icon: DollarSign },
   {
     id: 'notifications',
     label: 'Notifications',
@@ -81,20 +85,34 @@ const MODULES: Array<{
     permissions: ['notifications:manage'],
     icon: Bell,
   },
-  { id: 'gemini', label: 'Gemini Config', group: 'System & Access', permissions: ['settings:gemini'], icon: Sparkles },
-  { id: 'youtube', label: 'YouTube API', group: 'System & Access', permissions: ['settings:youtube'], icon: KeyRound },
-  { id: 'staff', label: 'Staff Accounts', group: 'System & Access', permissions: ['staff:manage'], icon: UserCog },
-  { id: 'permissions', label: 'Permissions', group: 'System & Access', permissions: ['roles:manage'], icon: Shield },
-  { id: 'audit', label: 'Audit Logs', group: 'System & Access', permissions: ['audit:read'], icon: Activity },
+  {
+    id: 'branding',
+    label: 'Site & Branding',
+    group: 'Site & Access',
+    permissions: ['settings:site'],
+    icon: Palette,
+  },
+  {
+    id: 'youtube',
+    label: 'Flutterwave & APIs',
+    group: 'Site & Access',
+    permissions: ['settings:youtube', 'payments:manage'],
+    icon: KeyRound,
+  },
+  { id: 'staff', label: 'Owner & Staff', group: 'Site & Access', permissions: ['staff:manage'], icon: UserCog },
+  { id: 'permissions', label: 'Permissions', group: 'Site & Access', permissions: ['roles:manage'], icon: Shield },
+  { id: 'audit', label: 'Audit Logs', group: 'Site & Access', permissions: ['audit:read'], icon: Activity },
 ];
 
-const MODULE_GROUPS: AdminGroup[] = ['Operations', 'Billing & Messaging', 'System & Access'];
+const MODULE_GROUPS: AdminGroup[] = ['Operations', 'Billing & Messaging', 'Site & Access'];
 
 export const AdminConsoleView: React.FC<{
   user: UserSession;
   onLogout: () => void;
+  onUserUpdated?: () => void;
   updateState?: string;
-}> = ({ user, onLogout, updateState }) => {
+}> = ({ user, onLogout, onUserUpdated, updateState }) => {
+  const { siteConfig } = useSiteConfig();
   const visibleModules = MODULES.filter((m) => {
     if (user.adminRole === 'super_admin' || !user.permissions || user.permissions.length === 0) return true;
     return m.permissions.some((perm) => user.permissions.includes(perm));
@@ -114,6 +132,21 @@ export const AdminConsoleView: React.FC<{
 
   const [notifTitle, setNotifTitle] = useState('');
   const [notifMessage, setNotifMessage] = useState('');
+  const [notifTargetUserId, setNotifTargetUserId] = useState('');
+  const [notifLinkPath, setNotifLinkPath] = useState('/');
+
+  const [newPkgName, setNewPkgName] = useState('');
+  const [newPkgKind, setNewPkgKind] = useState<'promotion' | 'seo_service'>('promotion');
+  const [newPkgDesc, setNewPkgDesc] = useState('');
+  const [newPkgUsd, setNewPkgUsd] = useState('19.99');
+  const [newPkgNgn, setNewPkgNgn] = useState('30000');
+  const [newPkgDays, setNewPkgDays] = useState('7');
+  const [newPkgDeliverables, setNewPkgDeliverables] = useState('');
+
+  const [ownerEmail, setOwnerEmail] = useState(user.email);
+  const [ownerName, setOwnerName] = useState(user.fullName || '');
+  const [ownerCurrentPassword, setOwnerCurrentPassword] = useState('');
+  const [ownerNewPassword, setOwnerNewPassword] = useState('');
 
   const [staffEmail, setStaffEmail] = useState('');
   const [staffName, setStaffName] = useState('');
@@ -125,10 +158,16 @@ export const AdminConsoleView: React.FC<{
   const [geminiMaxComp, setGeminiMaxComp] = useState('8');
   const [ytApiKey, setYtApiKey] = useState('');
   const [ytRegion, setYtRegion] = useState('US');
-  const [defaultProvider, setDefaultProvider] = useState('paystack');
+  const [defaultProvider, setDefaultProvider] = useState('flutterwave');
+  const [flwPublicKey, setFlwPublicKey] = useState('');
+  const [flwSecretKey, setFlwSecretKey] = useState('');
+  const [flwEncryptionKey, setFlwEncryptionKey] = useState('');
+  const [flwWebhookHash, setFlwWebhookHash] = useState('');
+  const [flwConnected, setFlwConnected] = useState(false);
+  const [testingFlw, setTestingFlw] = useState(false);
 
   const loadModule = async (mod: AdminModule) => {
-    if (mod === 'visitors' || mod === 'notifications') {
+    if (mod === 'visitors' || mod === 'branding') {
       setLoading(false);
       setError('');
       return;
@@ -167,17 +206,28 @@ export const AdminConsoleView: React.FC<{
       } else if (mod === 'pricing') {
         const res = await api.get<any>('/api/admin/packages');
         setData((p) => ({ ...p, packages: res.packages }));
+      } else if (mod === 'notifications') {
+        const res = await api.get<any>('/api/admin/notifications');
+        setData((p) => ({ ...p, notifHistory: res.recent, notifCustomers: res.customers }));
       } else if (mod === 'gemini' || mod === 'youtube') {
-        const res = await api.get<{ settings: Array<{ key: string; value: string; hasValue: boolean }> }>(
-          '/api/admin/settings'
-        );
+        const [res, gwRes] = await Promise.all([
+          api.get<{ settings: Array<{ key: string; value: string; hasValue: boolean }> }>('/api/admin/settings'),
+          api
+            .get<{ status?: { flutterwaveConfigured?: boolean } }>('/api/admin/payment-gateways')
+            .catch(() => ({ status: { flutterwaveConfigured: false } })),
+        ]);
         setData((p) => ({ ...p, settings: res.settings }));
         const map = new Map(res.settings.map((s) => [s.key, s.value]));
         setGeminiModel(map.get('gemini_model') || 'gemini-4-hydrogen');
         setGeminiMaxComp(map.get('gemini_max_competitors') || '8');
         setYtApiKey(map.get('youtube_api_key') || '');
         setYtRegion(map.get('youtube_default_region') || 'US');
-        setDefaultProvider(map.get('payment_default_provider') || 'paystack');
+        setDefaultProvider(map.get('payment_default_provider') || 'flutterwave');
+        setFlwPublicKey(map.get('flutterwave_public_key') || '');
+        setFlwSecretKey(map.get('flutterwave_secret_key') || '');
+        setFlwEncryptionKey(map.get('flutterwave_encryption_key') || '');
+        setFlwWebhookHash(map.get('flutterwave_webhook_hash') || '');
+        setFlwConnected(Boolean(gwRes.status?.flutterwaveConfigured));
       } else if (mod === 'staff') {
         const [sRes, rRes] = await Promise.all([
           api.get<any>('/api/admin/staff'),
@@ -281,9 +331,9 @@ export const AdminConsoleView: React.FC<{
       {/* Desktop Admin-Only Left Sidebar */}
       <aside className="hidden lg:flex lg:w-64 lg:flex-col lg:fixed lg:inset-y-0 bg-white border-r border-slate-200 z-30">
         <div className="h-16 px-5 flex items-center gap-3 border-b border-slate-100 shrink-0">
-          <VantageLogo size={32} />
-          <span className="text-base font-extrabold text-slate-900 font-display tracking-tight whitespace-nowrap">
-            Vantage Reach
+          <VantageLogo size={32} logoUrl={siteConfig.logoUrl} alt={siteConfig.appName} accentColor={siteConfig.themeColor} />
+          <span className="text-base font-extrabold text-slate-900 font-display tracking-tight truncate">
+            {siteConfig.appName}
           </span>
         </div>
 
@@ -294,7 +344,9 @@ export const AdminConsoleView: React.FC<{
         <div className="p-4 border-t border-slate-100 space-y-2.5 shrink-0">
           <div className="text-xs text-slate-500">
             <p className="font-semibold text-slate-900 truncate">{user.fullName || user.email}</p>
-            <p className="truncate mt-0.5">{formatStatusLabel(user.adminRole || 'admin')}</p>
+            <p className="truncate mt-0.5">
+              {user.adminRole === 'super_admin' ? 'Platform Owner (Super Admin)' : formatStatusLabel(user.adminRole || 'admin')}
+            </p>
           </div>
           <button
             type="button"
@@ -319,9 +371,9 @@ export const AdminConsoleView: React.FC<{
           <aside className="relative w-72 max-w-[85vw] bg-white h-full border-r border-slate-200 flex flex-col z-10 shadow-xl">
             <div className="h-14 px-4 flex items-center justify-between border-b border-slate-100 shrink-0">
               <div className="flex items-center gap-2.5 min-w-0">
-                <VantageLogo size={30} />
+                <VantageLogo size={30} logoUrl={siteConfig.logoUrl} alt={siteConfig.appName} accentColor={siteConfig.themeColor} />
                 <span className="text-sm font-extrabold text-slate-900 font-display tracking-tight whitespace-nowrap">
-                  Admin Menu
+                  Owner &amp; Admin Menu
                 </span>
               </div>
               <button
@@ -339,7 +391,9 @@ export const AdminConsoleView: React.FC<{
             <div className="p-4 border-t border-slate-100 space-y-2.5 shrink-0">
               <div className="text-xs text-slate-500">
                 <p className="font-semibold text-slate-900 truncate">{user.fullName || user.email}</p>
-                <p className="truncate mt-0.5">{formatStatusLabel(user.adminRole || 'admin')}</p>
+                <p className="truncate mt-0.5">
+                  {user.adminRole === 'super_admin' ? 'Platform Owner (Super Admin)' : formatStatusLabel(user.adminRole || 'admin')}
+                </p>
               </div>
               <button
                 type="button"
@@ -367,7 +421,7 @@ export const AdminConsoleView: React.FC<{
               <Menu className="w-5 h-5" />
             </button>
             <div className="flex items-center gap-2 text-xs font-medium text-slate-500 min-w-0">
-              <span className="font-semibold text-slate-900 whitespace-nowrap">Vantage Reach Admin</span>
+              <span className="font-semibold text-slate-900 whitespace-nowrap">{siteConfig.appName} Admin</span>
               <span aria-hidden="true">·</span>
               <span className="truncate text-[#2563EB] font-semibold">{activeModuleMeta.label}</span>
             </div>
@@ -386,7 +440,8 @@ export const AdminConsoleView: React.FC<{
         <main className="flex-1 w-full max-w-6xl mx-auto px-4 sm:px-6 py-5 lg:py-6 space-y-5">
           <div>
             <p className="text-xs font-medium text-slate-500">
-              Administration Console · {formatStatusLabel(user.adminRole || 'admin')}
+              {siteConfig.companyName} ·{' '}
+              {user.adminRole === 'super_admin' ? 'Platform Owner Console' : formatStatusLabel(user.adminRole || 'admin')}
             </p>
             <h1 className="text-2xl font-bold text-slate-900 mt-0.5">{activeModuleMeta.label}</h1>
           </div>
@@ -504,33 +559,44 @@ export const AdminConsoleView: React.FC<{
           <table className="w-full text-left text-xs">
             <thead>
               <tr className="border-b border-slate-200 text-slate-500">
-                <th className="py-2 pr-4">Video</th>
+                <th className="py-2 pr-4">Video &amp; Links</th>
+                <th className="py-2 pr-4">Channel</th>
                 <th className="py-2 pr-4">Owner</th>
-                <th className="py-2 pr-4 text-right">Baseline Views</th>
-                <th className="py-2 pr-4 text-right">Latest Views</th>
-                <th className="py-2">Action</th>
+                <th className="py-2">Submitted</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {(data.videos || []).map((v: any) => (
                 <tr key={v.id}>
-                  <td className="py-3 pr-4 font-semibold text-slate-900 max-w-xs truncate">{v.title}</td>
-                  <td className="py-3 pr-4 text-slate-600">{v.owner_email}</td>
-                  <td className="py-3 pr-4 text-right font-mono tabular-nums">{formatCount(v.baseline_views)}</td>
-                  <td className="py-3 pr-4 text-right font-mono tabular-nums">{formatCount(v.latest_views)}</td>
-                  <td className="py-3">
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        await api.post(`/api/admin/videos/${v.id}/snapshot`);
-                        flash('New snapshot captured from YouTube.');
-                        loadModule('videos');
-                      }}
-                      className="min-h-[36px] px-3 rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-100 font-semibold whitespace-nowrap"
-                    >
-                      Capture Snapshot
-                    </button>
+                  <td className="py-3 pr-4 max-w-xs">
+                    <p className="font-semibold text-slate-900 truncate">{v.title}</p>
+                    {typeof v.url === 'string' && v.url.startsWith('https://') && (
+                      <a
+                        href={v.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[11px] text-blue-700 hover:underline truncate block mt-0.5"
+                      >
+                        {v.url}
+                      </a>
+                    )}
                   </td>
+                  <td className="py-3 pr-4 max-w-xs">
+                    {typeof v.channel_url === 'string' && v.channel_url.startsWith('https://') ? (
+                      <a
+                        href={v.channel_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-700 hover:underline font-medium truncate block"
+                      >
+                        {v.channel_url}
+                      </a>
+                    ) : (
+                      <span className="text-slate-600">{v.channel_name || '—'}</span>
+                    )}
+                  </td>
+                  <td className="py-3 pr-4 text-slate-600">{v.owner_email}</td>
+                  <td className="py-3 text-slate-500 whitespace-nowrap">{formatDateTime(v.created_at)}</td>
                 </tr>
               ))}
             </tbody>
@@ -542,11 +608,33 @@ export const AdminConsoleView: React.FC<{
         <div className="space-y-3">
           {(data.campaigns || []).map((c: any) => (
             <div key={c.id} className="rounded-2xl border border-slate-200 bg-white p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-              <div className="space-y-1">
+              <div className="space-y-1 min-w-0">
                 <p className="text-xs font-mono text-slate-500">
                   {c.campaign_ref} · {c.customer_email} · {c.duration_days}d · Payment: {formatStatusLabel(c.payment_status)}
                 </p>
-                <p className="text-sm font-bold text-slate-900">{c.title}</p>
+                <p className="text-sm font-bold text-slate-900 truncate">{c.video_title || c.title}</p>
+                <div className="flex flex-wrap items-center gap-3 text-xs pt-0.5">
+                  {typeof c.video_url === 'string' && c.video_url.startsWith('https://') && (
+                    <a
+                      href={c.video_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-blue-700 hover:underline font-medium truncate max-w-xs"
+                    >
+                      Video: {c.video_url}
+                    </a>
+                  )}
+                  {typeof c.channel_url === 'string' && c.channel_url.startsWith('https://') && (
+                    <a
+                      href={c.channel_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-blue-700 hover:underline font-medium truncate max-w-xs"
+                    >
+                      Channel: {c.channel_url}
+                    </a>
+                  )}
+                </div>
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <select
@@ -765,58 +853,229 @@ export const AdminConsoleView: React.FC<{
       )}
 
       {!loading && activeMod === 'pricing' && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {(data.packages || []).map((pkg: any) => (
-            <PackagePricingCard
-              key={pkg.id}
-              pkg={pkg}
-              onSaved={() => {
-                flash(`Saved pricing for ${pkg.name}`);
+        <div className="space-y-5">
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              try {
+                await api.post('/api/admin/packages', {
+                  kind: newPkgKind,
+                  name: newPkgName,
+                  description: newPkgDesc,
+                  durationDays: Number(newPkgDays || 0),
+                  priceUsd: Number(newPkgUsd || 0),
+                  priceNgn: Number(newPkgNgn || 0),
+                  deliverables: newPkgDeliverables
+                    .split('\n')
+                    .map((s) => s.trim())
+                    .filter(Boolean),
+                  isActive: true,
+                });
+                setNewPkgName('');
+                setNewPkgDesc('');
+                setNewPkgDeliverables('');
+                flash('New service package created.');
                 loadModule('pricing');
-              }}
+              } catch (err: any) {
+                setError(err?.message || 'Could not create package.');
+              }
+            }}
+            className="rounded-2xl border border-slate-200 bg-white p-5 space-y-3"
+          >
+            <h2 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
+              <Plus className="w-4 h-4 text-blue-700" />
+              <span>Create Promotion or SEO Package</span>
+            </h2>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+              <input
+                type="text"
+                required
+                value={newPkgName}
+                onChange={(e) => setNewPkgName(e.target.value)}
+                placeholder="Package title"
+                className="min-h-[42px] px-3 rounded-xl border border-slate-200 bg-slate-50 text-xs lg:col-span-2"
+              />
+              <select
+                value={newPkgKind}
+                onChange={(e) => setNewPkgKind(e.target.value as 'promotion' | 'seo_service')}
+                className="min-h-[42px] px-3 rounded-xl border border-slate-200 bg-slate-50 text-xs"
+              >
+                <option value="promotion">Promotion Plan</option>
+                <option value="seo_service">SEO Service</option>
+              </select>
+              <input
+                type="number"
+                step="0.01"
+                value={newPkgUsd}
+                onChange={(e) => setNewPkgUsd(e.target.value)}
+                placeholder="Price USD"
+                className="min-h-[42px] px-3 rounded-xl border border-slate-200 bg-slate-50 text-xs font-mono"
+              />
+              <input
+                type="number"
+                step="100"
+                value={newPkgNgn}
+                onChange={(e) => setNewPkgNgn(e.target.value)}
+                placeholder="Price NGN"
+                className="min-h-[42px] px-3 rounded-xl border border-slate-200 bg-slate-50 text-xs font-mono"
+              />
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <input
+                type="text"
+                value={newPkgDesc}
+                onChange={(e) => setNewPkgDesc(e.target.value)}
+                placeholder="Short package description"
+                className="min-h-[42px] px-3 rounded-xl border border-slate-200 bg-slate-50 text-xs sm:col-span-2"
+              />
+              <input
+                type="number"
+                min={0}
+                value={newPkgDays}
+                onChange={(e) => setNewPkgDays(e.target.value)}
+                placeholder="Duration days (0 for SEO)"
+                className="min-h-[42px] px-3 rounded-xl border border-slate-200 bg-slate-50 text-xs font-mono"
+              />
+            </div>
+            <textarea
+              rows={2}
+              value={newPkgDeliverables}
+              onChange={(e) => setNewPkgDeliverables(e.target.value)}
+              placeholder="Deliverables (one item per line)"
+              className="w-full p-3 rounded-xl border border-slate-200 bg-slate-50 text-xs"
             />
-          ))}
+            <button
+              type="submit"
+              className="min-h-[42px] px-5 rounded-xl bg-blue-700 text-white text-xs font-semibold hover:bg-blue-800"
+            >
+              Add Package
+            </button>
+          </form>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {(data.packages || []).map((pkg: any) => (
+              <PackagePricingCard
+                key={pkg.id}
+                pkg={pkg}
+                onSaved={() => {
+                  flash(`Saved pricing for ${pkg.name}`);
+                  loadModule('pricing');
+                }}
+              />
+            ))}
+          </div>
         </div>
       )}
 
       {!loading && activeMod === 'notifications' && (
-        <form
-          onSubmit={async (e) => {
-            e.preventDefault();
-            await api.post('/api/admin/notifications/broadcast', {
-              title: notifTitle,
-              message: notifMessage,
-            });
-            setNotifTitle('');
-            setNotifMessage('');
-            flash('Announcement broadcast to all active accounts.');
-          }}
-          className="rounded-2xl border border-slate-200 bg-white p-5 max-w-xl space-y-4"
-        >
-          <h2 className="text-base font-bold text-slate-900">Broadcast Customer Notification</h2>
-          <input
-            type="text"
-            required
-            value={notifTitle}
-            onChange={(e) => setNotifTitle(e.target.value)}
-            placeholder="Notification title"
-            className="w-full min-h-[44px] px-3.5 rounded-xl border border-slate-200 bg-slate-50 text-sm"
-          />
-          <textarea
-            required
-            rows={3}
-            value={notifMessage}
-            onChange={(e) => setNotifMessage(e.target.value)}
-            placeholder="Message to active creators..."
-            className="w-full p-3.5 rounded-xl border border-slate-200 bg-slate-50 text-sm"
-          />
-          <button
-            type="submit"
-            className="min-h-[44px] px-5 rounded-xl bg-blue-700 text-white text-xs font-semibold hover:bg-blue-800"
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              try {
+                const res = await api.post<{ ok: boolean; sentCount: number }>(
+                  '/api/admin/notifications/broadcast',
+                  {
+                    title: notifTitle,
+                    message: notifMessage,
+                    targetUserId: notifTargetUserId ? Number(notifTargetUserId) : undefined,
+                    linkPath: notifLinkPath || '/',
+                  }
+                );
+                setNotifTitle('');
+                setNotifMessage('');
+                flash(`Notification pushed live to ${res.sentCount} account(s).`);
+                loadModule('notifications');
+              } catch (err: any) {
+                setError(err?.message || 'Failed to send notification.');
+              }
+            }}
+            className="lg:col-span-6 rounded-2xl border border-slate-200 bg-white p-5 space-y-4"
           >
-            Send Broadcast
-          </button>
-        </form>
+            <h2 className="text-base font-bold text-slate-900">Push Customer Notification</h2>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Recipient</label>
+                <select
+                  value={notifTargetUserId}
+                  onChange={(e) => setNotifTargetUserId(e.target.value)}
+                  className="w-full min-h-[44px] px-3 rounded-xl border border-slate-200 bg-slate-50 text-xs"
+                >
+                  <option value="">All Active Accounts</option>
+                  {(data.notifCustomers || []).map((c: any) => (
+                    <option key={c.id} value={c.id}>
+                      {c.full_name ? `${c.full_name} (${c.email})` : c.email}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Action Destination</label>
+                <select
+                  value={notifLinkPath}
+                  onChange={(e) => setNotifLinkPath(e.target.value)}
+                  className="w-full min-h-[44px] px-3 rounded-xl border border-slate-200 bg-slate-50 text-xs"
+                >
+                  <option value="/">Dashboard</option>
+                  <option value="/submit">Submit Video</option>
+                  <option value="/campaigns">My Campaigns</option>
+                  <option value="/seo">SEO &amp; Competitors</option>
+                  <option value="/plans">Plans &amp; Services</option>
+                  <option value="/reports">Reports</option>
+                  <option value="/profile">Profile &amp; Settings</option>
+                </select>
+              </div>
+            </div>
+            <input
+              type="text"
+              required
+              value={notifTitle}
+              onChange={(e) => setNotifTitle(e.target.value)}
+              placeholder="Notification title"
+              className="w-full min-h-[44px] px-3.5 rounded-xl border border-slate-200 bg-slate-50 text-sm"
+            />
+            <textarea
+              required
+              rows={3}
+              value={notifMessage}
+              onChange={(e) => setNotifMessage(e.target.value)}
+              placeholder="Message to creators..."
+              className="w-full p-3.5 rounded-xl border border-slate-200 bg-slate-50 text-sm"
+            />
+            <button
+              type="submit"
+              className="min-h-[44px] px-5 rounded-xl bg-blue-700 text-white text-xs font-semibold hover:bg-blue-800"
+            >
+              Send Live Push Notification
+            </button>
+          </form>
+
+          <div className="lg:col-span-6 rounded-2xl border border-slate-200 bg-white p-5 space-y-3">
+            <h2 className="text-base font-bold text-slate-900">Recent Sent Notifications</h2>
+            <div className="divide-y divide-slate-100 max-h-96 overflow-y-auto">
+              {(data.notifHistory || []).length === 0 ? (
+                <p className="text-xs text-slate-500 py-6 text-center">No notifications dispatched yet.</p>
+              ) : (
+                (data.notifHistory || []).map((n: any) => (
+                  <div key={n.id} className="py-3 text-xs space-y-0.5">
+                    <div className="flex items-start justify-between gap-2">
+                      <strong className="text-slate-900">{n.title}</strong>
+                      <span className="text-slate-400 shrink-0 tabular-nums">{formatDateTime(n.created_at)}</span>
+                    </div>
+                    <p className="text-slate-600 line-clamp-2">{n.message}</p>
+                    <p className="text-[11px] text-slate-400">
+                      To: {n.recipient_email} · {n.category} · {n.link_path}
+                    </p>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {!loading && activeMod === 'branding' && (
+        <AdminSiteSettingsPanel onFlash={flash} onError={setError} />
       )}
 
       {!loading && activeMod === 'gemini' && (
@@ -862,76 +1121,278 @@ export const AdminConsoleView: React.FC<{
       )}
 
       {!loading && activeMod === 'youtube' && (
-        <div className="rounded-2xl border border-slate-200 bg-white p-5 max-w-xl space-y-4">
-          <h2 className="text-base font-bold text-slate-900">YouTube Data API v3 &amp; Payment Gateway Config</h2>
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">
-              YouTube Data API v3 Key (Server Override)
-            </label>
-            <input
-              type="password"
-              value={ytApiKey}
-              onChange={(e) => setYtApiKey(e.target.value)}
-              placeholder="AIza..."
-              className="w-full min-h-[44px] px-3.5 rounded-xl border border-slate-200 bg-slate-50 text-sm font-mono"
-            />
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+          {/* Flutterwave Gateway Card */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-base font-bold text-slate-900">Flutterwave Payment Gateway</h2>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Connect your Flutterwave v3 keys to accept live $1 VIP memberships and campaign payments.
+                </p>
+              </div>
+              <span
+                className={`text-[11px] font-bold px-2.5 py-1 rounded-lg whitespace-nowrap ${
+                  flwConnected ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-800'
+                }`}
+              >
+                {flwConnected ? 'Live Key Ready' : 'Not Connected'}
+              </span>
+            </div>
+
             <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">Default Search Region</label>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">Flutterwave Public Key</label>
               <input
                 type="text"
-                value={ytRegion}
-                onChange={(e) => setYtRegion(e.target.value.toUpperCase())}
-                maxLength={2}
+                value={flwPublicKey}
+                onChange={(e) => setFlwPublicKey(e.target.value)}
+                placeholder="FLWPUBK-..."
+                className="w-full min-h-[44px] px-3.5 rounded-xl border border-slate-200 bg-slate-50 text-xs font-mono"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Flutterwave Secret Key (Required for Checkout &amp; Verification)
+              </label>
+              <input
+                type="password"
+                value={flwSecretKey}
+                onChange={(e) => setFlwSecretKey(e.target.value)}
+                placeholder="FLWSECK-..."
+                className="w-full min-h-[44px] px-3.5 rounded-xl border border-slate-200 bg-slate-50 text-xs font-mono"
+              />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Encryption Key</label>
+                <input
+                  type="password"
+                  value={flwEncryptionKey}
+                  onChange={(e) => setFlwEncryptionKey(e.target.value)}
+                  placeholder="FLWSECK_TEST..."
+                  className="w-full min-h-[44px] px-3.5 rounded-xl border border-slate-200 bg-slate-50 text-xs font-mono"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Webhook Secret Hash</label>
+                <input
+                  type="password"
+                  value={flwWebhookHash}
+                  onChange={(e) => setFlwWebhookHash(e.target.value)}
+                  placeholder="Optional verif-hash"
+                  className="w-full min-h-[44px] px-3.5 rounded-xl border border-slate-200 bg-slate-50 text-xs font-mono"
+                />
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-[11px] text-slate-600">
+              Flutterwave Webhook URL:{' '}
+              <code className="font-mono text-slate-900 break-all">
+                {`${window.location.origin}/api/payments/webhook/flutterwave`}
+              </code>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2.5">
+              <button
+                type="button"
+                onClick={async () => {
+                  setError('');
+                  try {
+                    await api.put('/api/admin/settings', { key: 'flutterwave_public_key', value: flwPublicKey });
+                    await api.put('/api/admin/settings', { key: 'flutterwave_secret_key', value: flwSecretKey });
+                    await api.put('/api/admin/settings', {
+                      key: 'flutterwave_encryption_key',
+                      value: flwEncryptionKey,
+                    });
+                    await api.put('/api/admin/settings', { key: 'flutterwave_webhook_hash', value: flwWebhookHash });
+                    await api.put('/api/admin/settings', { key: 'payment_default_provider', value: defaultProvider });
+                    flash('Flutterwave keys saved securely on the server.');
+                    loadModule('youtube');
+                  } catch (err: any) {
+                    setError(err?.message || 'Unable to save Flutterwave settings.');
+                  }
+                }}
+                className="min-h-[44px] px-5 rounded-xl bg-blue-700 text-white text-xs font-semibold hover:bg-blue-800"
+              >
+                Save Flutterwave Keys
+              </button>
+
+              <button
+                type="button"
+                disabled={testingFlw}
+                onClick={async () => {
+                  setError('');
+                  setTestingFlw(true);
+                  try {
+                    const res = await api.post<{ message: string }>('/api/admin/flutterwave/test');
+                    setFlwConnected(true);
+                    flash(res.message || 'Connected to Flutterwave!');
+                  } catch (err: any) {
+                    setError(err?.message || 'Flutterwave connection test failed.');
+                  } finally {
+                    setTestingFlw(false);
+                  }
+                }}
+                className="min-h-[44px] px-4 rounded-xl border border-slate-200 bg-white text-slate-800 text-xs font-semibold hover:bg-slate-50 disabled:opacity-60"
+              >
+                {testingFlw ? 'Testing...' : 'Test Flutterwave Connection'}
+              </button>
+            </div>
+          </div>
+
+          {/* YouTube API & Default Provider Card */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 space-y-4 h-fit">
+            <h2 className="text-base font-bold text-slate-900">YouTube Data API v3 &amp; Default Gateway</h2>
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                YouTube Data API v3 Key (Server Override)
+              </label>
+              <input
+                type="password"
+                value={ytApiKey}
+                onChange={(e) => setYtApiKey(e.target.value)}
+                placeholder="AIza..."
                 className="w-full min-h-[44px] px-3.5 rounded-xl border border-slate-200 bg-slate-50 text-sm font-mono"
               />
             </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">Default Payment Provider</label>
-              <select
-                value={defaultProvider}
-                onChange={(e) => setDefaultProvider(e.target.value)}
-                className="w-full min-h-[44px] px-3.5 rounded-xl border border-slate-200 bg-slate-50 text-sm"
-              >
-                <option value="paystack">Paystack</option>
-                <option value="flutterwave">Flutterwave</option>
-                <option value="sandbox">Test Gateway</option>
-              </select>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Default Search Region</label>
+                <input
+                  type="text"
+                  value={ytRegion}
+                  onChange={(e) => setYtRegion(e.target.value.toUpperCase())}
+                  maxLength={2}
+                  className="w-full min-h-[44px] px-3.5 rounded-xl border border-slate-200 bg-slate-50 text-sm font-mono"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Default Payment Provider</label>
+                <select
+                  value={defaultProvider}
+                  onChange={(e) => setDefaultProvider(e.target.value)}
+                  className="w-full min-h-[44px] px-3.5 rounded-xl border border-slate-200 bg-slate-50 text-sm"
+                >
+                  <option value="flutterwave">Flutterwave</option>
+                  <option value="paystack">Paystack</option>
+                  <option value="sandbox">Test Gateway</option>
+                </select>
+              </div>
             </div>
+            <button
+              type="button"
+              onClick={async () => {
+                await api.put('/api/admin/settings', { key: 'youtube_api_key', value: ytApiKey });
+                await api.put('/api/admin/settings', { key: 'youtube_default_region', value: ytRegion });
+                await api.put('/api/admin/settings', { key: 'payment_default_provider', value: defaultProvider });
+                flash('YouTube API & default gateway configuration saved.');
+              }}
+              className="min-h-[44px] px-5 rounded-xl bg-slate-900 text-white text-xs font-semibold hover:bg-slate-800"
+            >
+              Save API Configuration
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={async () => {
-              await api.put('/api/admin/settings', { key: 'youtube_api_key', value: ytApiKey });
-              await api.put('/api/admin/settings', { key: 'youtube_default_region', value: ytRegion });
-              await api.put('/api/admin/settings', { key: 'payment_default_provider', value: defaultProvider });
-              flash('YouTube API & gateway configuration saved.');
-            }}
-            className="min-h-[44px] px-5 rounded-xl bg-blue-700 text-white text-xs font-semibold hover:bg-blue-800"
-          >
-            Save API Configuration
-          </button>
         </div>
       )}
 
       {!loading && activeMod === 'staff' && (
         <div className="space-y-5">
+          {user.adminRole === 'super_admin' && (
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                setError('');
+                try {
+                  const res = await api.put<{ ok: boolean; sessionToken?: string }>(
+                    '/api/admin/owner-account',
+                    {
+                      email: ownerEmail,
+                      fullName: ownerName,
+                      currentPassword: ownerCurrentPassword,
+                      newPassword: ownerNewPassword || undefined,
+                    }
+                  );
+                  if (res.sessionToken) setAuthToken(res.sessionToken);
+                  setOwnerCurrentPassword('');
+                  setOwnerNewPassword('');
+                  flash('Owner credentials updated.');
+                  onUserUpdated?.();
+                  loadModule('staff');
+                } catch (err: any) {
+                  setError(err?.message || 'Unable to update owner credentials.');
+                }
+              }}
+              className="rounded-2xl border border-slate-200 bg-white p-5 space-y-3"
+            >
+              <div>
+                <h2 className="text-sm font-bold text-slate-900">Platform Owner Credentials</h2>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Update your own Owner email, display name, or password (enter current password to confirm email/password changes).
+                </p>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                <input
+                  type="email"
+                  required
+                  value={ownerEmail}
+                  onChange={(e) => setOwnerEmail(e.target.value)}
+                  placeholder="Owner email"
+                  className="min-h-[44px] px-3 rounded-xl border border-slate-200 bg-slate-50 text-xs"
+                />
+                <input
+                  type="text"
+                  value={ownerName}
+                  onChange={(e) => setOwnerName(e.target.value)}
+                  placeholder="Owner full name"
+                  className="min-h-[44px] px-3 rounded-xl border border-slate-200 bg-slate-50 text-xs"
+                />
+                <input
+                  type="password"
+                  value={ownerCurrentPassword}
+                  onChange={(e) => setOwnerCurrentPassword(e.target.value)}
+                  placeholder="Current password"
+                  className="min-h-[44px] px-3 rounded-xl border border-slate-200 bg-slate-50 text-xs"
+                />
+                <input
+                  type="password"
+                  minLength={8}
+                  value={ownerNewPassword}
+                  onChange={(e) => setOwnerNewPassword(e.target.value)}
+                  placeholder="New password (optional)"
+                  className="min-h-[44px] px-3 rounded-xl border border-slate-200 bg-slate-50 text-xs"
+                />
+              </div>
+              <button
+                type="submit"
+                className="min-h-[44px] px-5 rounded-xl bg-slate-900 text-white text-xs font-semibold hover:bg-slate-800"
+              >
+                Update Owner Account
+              </button>
+            </form>
+          )}
+
           <form
             onSubmit={async (e) => {
               e.preventDefault();
-              await api.post('/api/admin/staff', {
-                email: staffEmail,
-                fullName: staffName,
-                password: staffPassword,
-                roleId: Number(staffRoleId),
-                staffTitle,
-              });
-              setStaffEmail('');
-              setStaffName('');
-              setStaffPassword('');
-              flash('Staff account assigned.');
-              loadModule('staff');
+              setError('');
+              try {
+                await api.post('/api/admin/staff', {
+                  email: staffEmail,
+                  fullName: staffName,
+                  password: staffPassword,
+                  roleId: Number(staffRoleId),
+                  staffTitle,
+                });
+                setStaffEmail('');
+                setStaffName('');
+                setStaffPassword('');
+                flash('Staff / owner account assigned.');
+                loadModule('staff');
+              } catch (err: any) {
+                setError(err?.message || 'Unable to save staff account.');
+              }
             }}
             className="rounded-2xl border border-slate-200 bg-white p-5 space-y-3"
           >
@@ -1063,16 +1524,22 @@ export const AdminConsoleView: React.FC<{
 
 const PackagePricingCard: React.FC<{ pkg: any; onSaved: () => void }> = ({ pkg, onSaved }) => {
   const [name, setName] = useState(pkg.name);
+  const [description, setDescription] = useState(pkg.description || '');
   const [priceUsd, setPriceUsd] = useState(String(pkg.price_usd));
   const [priceNgn, setPriceNgn] = useState(String(pkg.price_ngn));
   const [durationDays, setDurationDays] = useState(String(pkg.duration_days));
+  const [deliverablesText, setDeliverablesText] = useState(
+    Array.isArray(pkg.deliverables) ? pkg.deliverables.join('\n') : ''
+  );
   const [isActive, setIsActive] = useState(Boolean(pkg.is_active));
   const [saving, setSaving] = useState(false);
 
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3 text-xs">
       <div className="flex items-center justify-between">
-        <span className="font-mono text-slate-500">{pkg.code}</span>
+        <span className="font-mono text-slate-500">
+          {pkg.code} · {pkg.kind === 'seo_service' ? 'SEO Service' : 'Promotion'}
+        </span>
         <label className="inline-flex items-center gap-1.5">
           <input type="checkbox" checked={isActive} onChange={(e) => setIsActive(e.target.checked)} />
           <span>Active</span>
@@ -1083,6 +1550,13 @@ const PackagePricingCard: React.FC<{ pkg: any; onSaved: () => void }> = ({ pkg, 
         value={name}
         onChange={(e) => setName(e.target.value)}
         className="w-full min-h-[40px] px-3 rounded-xl border border-slate-200 bg-slate-50 font-semibold"
+      />
+      <textarea
+        rows={2}
+        value={description}
+        onChange={(e) => setDescription(e.target.value)}
+        placeholder="Package description"
+        className="w-full p-2.5 rounded-xl border border-slate-200 bg-slate-50 text-xs"
       />
       <div className="grid grid-cols-3 gap-2">
         <div>
@@ -1115,26 +1589,39 @@ const PackagePricingCard: React.FC<{ pkg: any; onSaved: () => void }> = ({ pkg, 
           />
         </div>
       </div>
+      <textarea
+        rows={3}
+        value={deliverablesText}
+        onChange={(e) => setDeliverablesText(e.target.value)}
+        placeholder="Deliverables (one per line)"
+        className="w-full p-2.5 rounded-xl border border-slate-200 bg-slate-50 text-xs"
+      />
       <button
         type="button"
         disabled={saving}
         onClick={async () => {
           setSaving(true);
-          await api.put(`/api/admin/packages/${pkg.id}`, {
-            name,
-            description: pkg.description,
-            durationDays: Number(durationDays),
-            priceUsd: Number(priceUsd),
-            priceNgn: Number(priceNgn),
-            deliverables: pkg.deliverables,
-            isActive,
-          });
-          setSaving(false);
-          onSaved();
+          try {
+            await api.put(`/api/admin/packages/${pkg.id}`, {
+              name,
+              description,
+              durationDays: Number(durationDays),
+              priceUsd: Number(priceUsd),
+              priceNgn: Number(priceNgn),
+              deliverables: deliverablesText
+                .split('\n')
+                .map((s: string) => s.trim())
+                .filter(Boolean),
+              isActive,
+            });
+            onSaved();
+          } finally {
+            setSaving(false);
+          }
         }}
         className="min-h-[40px] px-4 rounded-xl bg-blue-700 text-white font-semibold hover:bg-blue-800"
       >
-        {saving ? 'Saving...' : 'Save Pricing'}
+        {saving ? 'Saving...' : 'Save Package'}
       </button>
     </div>
   );
@@ -1152,6 +1639,7 @@ const ALL_PERMISSIONS = [
   'reports:manage',
   'pricing:manage',
   'notifications:manage',
+  'settings:site',
   'settings:gemini',
   'settings:youtube',
   'staff:manage',

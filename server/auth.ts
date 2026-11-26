@@ -118,6 +118,8 @@ export interface AuthedUser {
   isAdmin: boolean;
   adminRole: string | null;
   permissions: string[];
+  isVip: boolean;
+  vipExpiresAt: string | null;
 }
 
 export interface AuthRequest extends Request {
@@ -130,12 +132,16 @@ export async function loadUserById(userId: number): Promise<AuthedUser | null> {
     email: string;
     status: string;
     full_name: string;
+    vip_status: string | null;
+    vip_expires_at: string | null;
     admin_id: number | null;
     admin_active: number | null;
     role_name: string | null;
     permissions_json: string | null;
   }>(
     `SELECT u.id, u.email, u.status, COALESCE(p.full_name, '') AS full_name,
+            COALESCE(p.vip_status, 'none') AS vip_status,
+            COALESCE(p.vip_expires_at, '') AS vip_expires_at,
             a.id AS admin_id, a.is_active AS admin_active,
             r.name AS role_name, r.permissions_json
      FROM users u
@@ -157,6 +163,10 @@ export async function loadUserById(userId: number): Promise<AuthedUser | null> {
     }
   }
 
+  const vipExpiry = row.vip_expires_at ? String(row.vip_expires_at).trim() : '';
+  const isVipActive =
+    row.vip_status === 'active' && (!vipExpiry || new Date(vipExpiry).getTime() > Date.now());
+
   return {
     id: Number(row.id),
     email: row.email,
@@ -165,6 +175,8 @@ export async function loadUserById(userId: number): Promise<AuthedUser | null> {
     isAdmin: Boolean(row.admin_id),
     adminRole: row.role_name,
     permissions,
+    isVip: isVipActive,
+    vipExpiresAt: vipExpiry || null,
   };
 }
 

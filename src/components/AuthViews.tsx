@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { ArrowRight, CheckCircle2, Eye, EyeOff, Lock, Mail, User as UserIcon, Globe } from 'lucide-react';
 import { api, setAuthToken } from '../lib/api';
+import { useSiteConfig } from '../lib/siteConfig';
 import { trackAuthEvent, trackScreenView } from '../lib/visitorTracker';
 import type { UserSession } from '../types';
 import { VantageLogo, WelcomeHeroIllustration } from './BrandMark';
@@ -13,6 +14,7 @@ interface AuthViewsProps {
 }
 
 export const AuthViews: React.FC<AuthViewsProps> = ({ onAuthenticated }) => {
+  const { siteConfig } = useSiteConfig();
   const [screen, setScreen] = useState<AuthScreen>('welcome');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -30,8 +32,8 @@ export const AuthViews: React.FC<AuthViewsProps> = ({ onAuthenticated }) => {
   const [notice, setNotice] = useState('');
 
   useEffect(() => {
-    trackScreenView(`/${screen}`, `Vantage Reach · ${screen}`);
-  }, [screen]);
+    trackScreenView(`/${screen}`, `${siteConfig.appName} · ${screen}`);
+  }, [screen, siteConfig.appName]);
 
   const clearFeedback = () => {
     setError('');
@@ -124,12 +126,17 @@ export const AuthViews: React.FC<AuthViewsProps> = ({ onAuthenticated }) => {
       <div className="min-h-screen bg-white flex flex-col justify-between px-6 py-8 md:py-12">
         <div className="max-w-5xl mx-auto w-full flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <VantageLogo size={38} />
+            <VantageLogo
+              size={38}
+              logoUrl={siteConfig.logoUrl}
+              alt={siteConfig.appName}
+              accentColor={siteConfig.themeColor}
+            />
             <div>
               <span className="text-lg font-bold tracking-tight text-slate-900 font-display block leading-none">
-                Vantage Reach
+                {siteConfig.appName}
               </span>
-              <span className="text-xs text-slate-500">Vantage Talent Search Global</span>
+              <span className="text-xs text-slate-500">{siteConfig.companyName}</span>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -150,13 +157,13 @@ export const AuthViews: React.FC<AuthViewsProps> = ({ onAuthenticated }) => {
         <div className="max-w-5xl mx-auto w-full grid grid-cols-1 lg:grid-cols-2 gap-10 items-center my-auto py-8">
           <div className="text-center lg:text-left space-y-5">
             <p className="text-xs font-semibold text-blue-700 tracking-wide">
-              Grow · Rank · Earn Globally
+              {siteConfig.tagline}
             </p>
             <h1 className="text-3xl sm:text-4xl lg:text-5xl font-bold text-slate-900 tracking-tight leading-tight text-balance">
-              Your YouTube Growth Partner — Smarter, Measurable, Global.
+              {siteConfig.heroHeadline}
             </h1>
             <p className="text-base text-slate-600 max-w-xl mx-auto lg:mx-0 leading-relaxed">
-              Submit your YouTube videos, preserve immutable baseline performance snapshots, benchmark real search competitors, and generate structured Gemini SEO recommendations alongside legitimate promotion campaigns.
+              {siteConfig.heroDescription}
             </p>
             <div className="flex flex-col sm:flex-row gap-3 pt-2 justify-center lg:justify-start">
               <button
@@ -214,7 +221,7 @@ export const AuthViews: React.FC<AuthViewsProps> = ({ onAuthenticated }) => {
         </div>
 
         <footer className="max-w-5xl mx-auto w-full text-center text-xs text-slate-400">
-          Vantage Reach · Operated by Vantage Talent Search Global
+          {siteConfig.footerText}
         </footer>
       </div>
     );
@@ -229,8 +236,13 @@ export const AuthViews: React.FC<AuthViewsProps> = ({ onAuthenticated }) => {
             onClick={() => setScreen('welcome')}
             className="inline-flex items-center gap-2.5 mb-4"
           >
-            <VantageLogo size={36} />
-            <span className="text-lg font-bold text-slate-900 font-display">Vantage Reach</span>
+            <VantageLogo
+              size={36}
+              logoUrl={siteConfig.logoUrl}
+              alt={siteConfig.appName}
+              accentColor={siteConfig.themeColor}
+            />
+            <span className="text-lg font-bold text-slate-900 font-display">{siteConfig.appName}</span>
           </button>
           <h1 className="text-2xl font-bold text-slate-900">
             {screen === 'login' && 'Welcome Back'}
@@ -350,6 +362,11 @@ export const AuthViews: React.FC<AuthViewsProps> = ({ onAuthenticated }) => {
 
         {screen === 'register' && (
           <form onSubmit={handleRegister} className="space-y-4">
+            {!siteConfig.registrationsOpen && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-medium text-amber-800">
+                New creator registrations are currently paused by the site owner.
+              </div>
+            )}
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1.5">Full Name</label>
               <div className="relative">

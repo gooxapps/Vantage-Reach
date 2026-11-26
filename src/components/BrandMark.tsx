@@ -1,46 +1,134 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Video } from 'lucide-react';
+import type { SiteConfig } from '../types';
 
-export const VantageLogo: React.FC<{ size?: number }> = ({ size = 34 }) => (
-  <svg
-    width={size}
-    height={size}
-    viewBox="0 0 44 40"
-    fill="none"
-    xmlns="http://www.w3.org/2000/svg"
-    aria-hidden="true"
-    className="shrink-0"
-  >
-    {/* Bold VR Monogram with Upward Arrow matching Vantage Reach visual identity */}
-    <path
-      d="M3.5 9.5L13.5 34.5H18.5L26 14.5"
-      stroke="#2563EB"
-      strokeWidth="5.2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    />
-    <path
-      d="M21 34.5V16.5H29.5C33.5 16.5 36 18.8 36 22.1C36 25.2 33.8 27.3 30.2 27.7L36.5 34.5"
-      stroke="#1D4ED8"
-      strokeWidth="4.6"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    />
-    <path
-      d="M15.5 23.5L32.5 5.5"
-      stroke="#2563EB"
-      strokeWidth="4"
-      strokeLinecap="round"
-    />
-    <path
-      d="M24.5 5.2H33.2V13.8"
-      stroke="#2563EB"
-      strokeWidth="4"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    />
-  </svg>
-);
+export const VantageLogo: React.FC<{
+  size?: number;
+  logoUrl?: string;
+  alt?: string;
+  accentColor?: string;
+}> = ({ size = 34, logoUrl, alt = 'Brand logo', accentColor = '#2563EB' }) => {
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    setFailed(false);
+  }, [logoUrl]);
+
+  if (logoUrl && !failed) {
+    return (
+      <img
+        src={logoUrl}
+        alt={alt}
+        referrerPolicy="no-referrer"
+        onError={() => setFailed(true)}
+        style={{ width: size, height: size }}
+        className="shrink-0 rounded-xl object-contain"
+      />
+    );
+  }
+
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 44 40"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden="true"
+      className="shrink-0"
+    >
+      {/* Bold VR Monogram with Upward Arrow matching brand visual identity */}
+      <path
+        d="M3.5 9.5L13.5 34.5H18.5L26 14.5"
+        stroke={accentColor}
+        strokeWidth="5.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M21 34.5V16.5H29.5C33.5 16.5 36 18.8 36 22.1C36 25.2 33.8 27.3 30.2 27.7L36.5 34.5"
+        stroke="#1D4ED8"
+        strokeWidth="4.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M15.5 23.5L32.5 5.5"
+        stroke={accentColor}
+        strokeWidth="4"
+        strokeLinecap="round"
+      />
+      <path
+        d="M24.5 5.2H33.2V13.8"
+        stroke={accentColor}
+        strokeWidth="4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+};
+
+export const BrandSplashScreen: React.FC<{
+  config: SiteConfig;
+  preview?: boolean;
+  onSkip?: () => void;
+}> = ({ config, preview = false, onSkip }) => {
+  const artwork = config.splashImageUrl || config.logoUrl || config.iconUrl;
+  return (
+    <div
+      style={{
+        backgroundColor: config.splashBgColor || '#FFFFFF',
+        color: config.splashTextColor || '#0F172A',
+      }}
+      className={
+        preview
+          ? 'w-full rounded-2xl border border-slate-200 p-8 flex flex-col items-center justify-center text-center min-h-[260px] transition-colors'
+          : 'fixed inset-0 z-50 flex flex-col items-center justify-center px-6 text-center transition-opacity duration-200'
+      }
+    >
+      <div className="flex flex-col items-center gap-4 max-w-sm">
+        <div className="p-3 rounded-2xl bg-white/10">
+          <VantageLogo
+            size={preview ? 56 : 72}
+            logoUrl={artwork}
+            alt={config.splashTitle || config.appName}
+            accentColor={config.splashAccentColor || config.themeColor}
+          />
+        </div>
+        <div className="space-y-1.5">
+          <h1
+            className="text-2xl sm:text-3xl font-extrabold font-display tracking-tight"
+            style={{ color: config.splashTextColor || '#0F172A' }}
+          >
+            {config.splashTitle || config.appName}
+          </h1>
+          {config.splashSubtitle && (
+            <p className="text-xs sm:text-sm opacity-75 leading-relaxed">
+              {config.splashSubtitle}
+            </p>
+          )}
+        </div>
+        <div className="w-32 h-1 rounded-full overflow-hidden bg-slate-400/25 mt-2">
+          <div
+            className="h-full w-2/3 rounded-full animate-pulse"
+            style={{ backgroundColor: config.splashAccentColor || config.themeColor || '#2563EB' }}
+          />
+        </div>
+        {onSkip && (
+          <button
+            type="button"
+            onClick={onSkip}
+            className="mt-3 min-h-[40px] px-4 rounded-xl border border-slate-300/60 text-xs font-semibold opacity-80 hover:opacity-100 transition-opacity"
+          >
+            {preview ? 'Close Preview' : 'Continue'}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+};
+
 
 export const PromoDiscoveryIllustration: React.FC = () => (
   <svg

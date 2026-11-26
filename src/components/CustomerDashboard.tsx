@@ -11,7 +11,7 @@ import {
   FileText,
   Link2,
   Play,
-  Sparkles,
+  Rocket,
 } from 'lucide-react';
 import { api, formatCompact, formatDate, formatStatusLabel } from '../lib/api';
 import type { CampaignRecord, UserSession, VideoRecord } from '../types';
@@ -168,12 +168,12 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({ user, onNa
       onClick: () => onNavigate('campaigns'),
     },
     {
-      label: 'Videos Analysed',
+      label: 'Videos Dropped',
       value: totalVideosCount,
       iconBg: 'bg-violet-50 text-violet-600',
       icon: BarChart2,
       filledIcon: false,
-      onClick: () => onNavigate('intelligence'),
+      onClick: () => onNavigate('campaigns'),
     },
     {
       label: 'Available Reports',
@@ -237,7 +237,7 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({ user, onNa
         </div>
       </section>
 
-      {/* Prominent Blue Submit a YouTube Video CTA */}
+      {/* Prominent Blue Drop Video & Channel Link CTA */}
       <button
         type="button"
         onClick={() => onNavigate('submit')}
@@ -246,7 +246,7 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({ user, onNa
         <span aria-hidden="true" />
         <span className="inline-flex items-center justify-center gap-2.5 whitespace-nowrap">
           <Link2 className="w-5 h-5 shrink-0" />
-          <span>Submit a YouTube Video</span>
+          <span>Drop Video &amp; Channel Link</span>
         </span>
         <ChevronRight className="w-5 h-5 justify-self-end text-white/90 shrink-0" />
       </button>
@@ -298,7 +298,7 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({ user, onNa
           <div className="rounded-xl bg-slate-50 border border-slate-100 p-5 text-center">
             <p className="text-sm font-semibold text-slate-800">No promotion campaigns yet</p>
             <p className="text-xs text-slate-500 mt-1 max-w-md mx-auto">
-              Submit a YouTube video first, then pick a 1-day, 7-day, or 30-day promotion plan to track live status here.
+              Drop your YouTube video link and channel link, then pay the $1 membership fee so our team can promote your video on our platform.
             </p>
             <div className="mt-4 flex flex-wrap items-center justify-center gap-2.5">
               <button
@@ -306,14 +306,14 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({ user, onNa
                 onClick={() => onNavigate('submit')}
                 className="min-h-[44px] px-4 py-2 rounded-xl bg-[#2563EB] text-white text-xs font-semibold hover:bg-[#1D4ED8]"
               >
-                Submit a Video
+                Drop a Video
               </button>
               <button
                 type="button"
                 onClick={() => onNavigate('plans')}
                 className="min-h-[44px] px-4 py-2 rounded-xl border border-slate-200 bg-white text-slate-700 text-xs font-semibold hover:bg-slate-50"
               >
-                Explore Plans
+                Promote ($1 VIP)
               </button>
             </div>
           </div>
@@ -359,20 +359,20 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({ user, onNa
         )}
       </section>
 
-      {/* Growth Shortcuts & Recently Analysed Videos (responsive desktop/mobile continuation) */}
+      {/* Promote Shortcuts & Recently Dropped Videos */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
         <section className="lg:col-span-5 rounded-2xl bg-white border border-slate-200/90 shadow-[0_2px_10px_rgba(15,23,42,0.04)] p-4 sm:p-5">
-          <h2 className="text-sm font-bold text-slate-900 mb-3">Creator Intelligence & Plans</h2>
+          <h2 className="text-sm font-bold text-slate-900 mb-3">Promote on Our Platform</h2>
           <div className="grid grid-cols-2 gap-3">
             <button
               type="button"
-              onClick={() => onNavigate('seo')}
+              onClick={() => onNavigate('submit')}
               className="min-h-[84px] rounded-xl border border-slate-200 bg-slate-50/70 hover:bg-blue-50/70 hover:border-blue-200 p-3.5 text-left transition-colors flex flex-col justify-between"
             >
-              <Sparkles className="w-5 h-5 text-[#2563EB]" />
+              <Rocket className="w-5 h-5 text-[#2563EB]" />
               <div>
-                <p className="text-xs sm:text-sm font-bold text-slate-900">SEO Optimizer</p>
-                <p className="text-[11px] text-slate-500 mt-0.5">Competitors & Gemini</p>
+                <p className="text-xs sm:text-sm font-bold text-slate-900">Drop Links</p>
+                <p className="text-[11px] text-slate-500 mt-0.5">Video &amp; channel link</p>
               </div>
             </button>
 
@@ -383,8 +383,8 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({ user, onNa
             >
               <Crown className="w-5 h-5 text-[#2563EB]" />
               <div>
-                <p className="text-xs sm:text-sm font-bold text-slate-900">Plans & Add-ons</p>
-                <p className="text-[11px] text-slate-500 mt-0.5">1, 7, 30-day reach</p>
+                <p className="text-xs sm:text-sm font-bold text-slate-900">Promote ($1)</p>
+                <p className="text-[11px] text-slate-500 mt-0.5">VIP membership fee</p>
               </div>
             </button>
           </div>
@@ -392,22 +392,22 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({ user, onNa
 
         <section className="lg:col-span-7 rounded-2xl bg-white border border-slate-200/90 shadow-[0_2px_10px_rgba(15,23,42,0.04)] p-4 sm:p-5">
           <div className="flex items-center justify-between gap-3 mb-3">
-            <h2 className="text-sm font-bold text-slate-900">Recently Analysed Videos</h2>
+            <h2 className="text-sm font-bold text-slate-900">Recently Dropped Videos</h2>
             <button
               type="button"
-              onClick={() => onNavigate('intelligence')}
+              onClick={() => onNavigate('plans')}
               className="text-xs font-semibold text-[#2563EB] hover:underline whitespace-nowrap"
             >
-              Video Intelligence
+              Promote Video
             </button>
           </div>
 
           {recentVideos.length === 0 ? (
             <div className="rounded-xl bg-slate-50 border border-slate-100 p-4 flex items-center justify-between gap-3">
               <div className="min-w-0">
-                <p className="text-xs font-semibold text-slate-800">No videos analysed yet</p>
+                <p className="text-xs font-semibold text-slate-800">No videos dropped yet</p>
                 <p className="text-[11px] text-slate-500 mt-0.5">
-                  Paste any YouTube link to capture an immutable baseline snapshot.
+                  Paste your video link and channel link to start your $1 promotion.
                 </p>
               </div>
               <button
@@ -415,7 +415,7 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({ user, onNa
                 onClick={() => onNavigate('submit')}
                 className="min-h-[40px] px-3.5 rounded-xl bg-[#2563EB] text-white text-xs font-semibold hover:bg-[#1D4ED8] whitespace-nowrap shrink-0"
               >
-                Analyse Now
+                Drop Now
               </button>
             </div>
           ) : (
@@ -424,7 +424,7 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({ user, onNa
                 <button
                   key={v.id}
                   type="button"
-                  onClick={() => onNavigate('intelligence', v.id)}
+                  onClick={() => onNavigate('plans', v.id)}
                   className="w-full py-2.5 first:pt-0 last:pb-0 flex items-center gap-3 text-left hover:bg-slate-50/80 rounded-xl px-1.5 -mx-1.5 transition-colors"
                 >
                   <div className="w-16 h-10 rounded-lg overflow-hidden shrink-0 bg-slate-100">
@@ -433,7 +433,7 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({ user, onNa
                   <div className="min-w-0 flex-1">
                     <p className="text-xs sm:text-sm font-semibold text-slate-900 truncate">{v.title}</p>
                     <p className="text-[11px] text-slate-500 truncate mt-0.5">
-                      {v.channel_name} · {formatCompact(v.latest_views)} views
+                      {v.channel_url || v.channel_name || formatCompact(v.latest_views)}
                     </p>
                   </div>
                   <ChevronRight className="w-4 h-4 text-slate-400 shrink-0" />

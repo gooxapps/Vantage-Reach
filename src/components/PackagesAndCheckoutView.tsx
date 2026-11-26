@@ -2,6 +2,8 @@ import React, { useEffect, useState } from 'react';
 import {
   CheckCircle2,
   CreditCard,
+  Crown,
+  ExternalLink,
   ShieldCheck,
   Sparkles,
   X,
@@ -27,6 +29,15 @@ interface CheckoutSession {
   notice?: string;
 }
 
+function isSafeHttpsUrl(url: string | null | undefined): url is string {
+  if (!url) return false;
+  try {
+    return new URL(url).protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 export const PackagesAndCheckoutView: React.FC<PackagesAndCheckoutViewProps> = ({
   selectedVideoId,
   onSelectVideo,
@@ -36,7 +47,7 @@ export const PackagesAndCheckoutView: React.FC<PackagesAndCheckoutViewProps> = (
   const [packages, setPackages] = useState<PackageRecord[]>([]);
   const [videos, setVideos] = useState<VideoRecord[]>([]);
   const [currency, setCurrency] = useState<'USD' | 'NGN'>('USD');
-  const [provider, setProvider] = useState<'paystack' | 'flutterwave' | 'sandbox'>('paystack');
+  const [provider, setProvider] = useState<'paystack' | 'flutterwave' | 'sandbox'>('flutterwave');
   const [targetRegions, setTargetRegions] = useState('Global (US, UK, Nigeria, Europe)');
   const [selectedPkg, setSelectedPkg] = useState<PackageRecord | null>(null);
 
@@ -53,17 +64,24 @@ export const PackagesAndCheckoutView: React.FC<PackagesAndCheckoutViewProps> = (
     ])
       .then(([pkgRes, vidRes]) => {
         setPackages(pkgRes.packages);
-        setProvider(pkgRes.defaultProvider || 'paystack');
+        setProvider(pkgRes.defaultProvider || 'flutterwave');
         setVideos(vidRes.videos);
         if (!selectedVideoId && vidRes.videos[0]) {
           onSelectVideo(vidRes.videos[0].id);
+        }
+        const hasPromo = pkgRes.packages.some((p) => p.kind === 'promotion');
+        const hasSeo = pkgRes.packages.some((p) => p.kind === 'seo_service');
+        if (!hasPromo && hasSeo) {
+          setTab('seo_service');
         }
       })
       .catch((err) => setError(err.message || 'Could not load packages.'))
       .finally(() => setLoading(false));
   }, []);
 
-  const filteredPackages = packages.filter((p) => p.kind === tab);
+  const hasMultipleKinds =
+    packages.some((p) => p.kind === 'promotion') && packages.some((p) => p.kind === 'seo_service');
+  const filteredPackages = hasMultipleKinds ? packages.filter((p) => p.kind === tab) : packages;
 
   const handleStartCheckout = async () => {
     if (!selectedPkg) return;
@@ -102,7 +120,7 @@ export const PackagesAndCheckoutView: React.FC<PackagesAndCheckoutViewProps> = (
           txRef: res.payment.tx_ref,
           provider: res.payment.provider,
           mode: res.mode || 'sandbox_checkout',
-          checkoutUrl: res.checkoutUrl || null,
+          checkoutUrl: isSafeHttpsUrl(res.checkoutUrl) ? res.checkoutUrl : null,
           amount: res.payment.amount,
           currency: res.payment.currency,
           packageName: selectedPkg.name,
@@ -128,11 +146,12 @@ export const PackagesAndCheckoutView: React.FC<PackagesAndCheckoutViewProps> = (
       if (res.verified) {
         setCheckoutSession(null);
         setSelectedPkg(null);
+        window.dispatchEvent(new CustomEvent('vantage:app-sync'));
         setSuccessMsg(
           `Payment ${checkoutSession.txRef} verified server-side. Your order is now active in the fulfillment queue.`
         );
       } else {
-        setError(`Payment verification declined: ${res.failureReason || 'Declined'}`);
+        setError(`Payment verification status: ${res.failureReason || 'Not completed yet'}`);
       }
     } catch (err: any) {
       setError(err.message || 'Server verification error.');
@@ -149,9 +168,13 @@ export const PackagesAndCheckoutView: React.FC<PackagesAndCheckoutViewProps> = (
     <div className="space-y-6">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900">Plans &amp; Services</h1>
+          <h1 className="text-2xl font-bold text-slate-900">
+            {hasMultipleKinds ? 'Plans & Services' : 'Promote Your Video ($1 VIP)'}
+          </h1>
           <p className="text-sm text-slate-500 mt-0.5">
-            Legitimate YouTube audience discovery campaigns and specialist SEO services
+            {hasMultipleKinds
+              ? 'YouTube promotion campaigns and services'
+              : 'Pay your $1 membership fee via Flutterwave after dropping your video and channel link so our team can promote it on our platform.'}
           </p>
         </div>
 
@@ -190,27 +213,29 @@ export const PackagesAndCheckoutView: React.FC<PackagesAndCheckoutViewProps> = (
         </div>
       </div>
 
-      {/* Category Switcher */}
-      <div className="flex items-center gap-1 p-1 rounded-xl bg-slate-100 w-fit">
-        <button
-          type="button"
-          onClick={() => setTab('promotion')}
-          className={`min-h-[40px] px-4 rounded-lg text-xs font-semibold transition-colors ${
-            tab === 'promotion' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
-          }`}
-        >
-          Promotion Campaigns (1 / 7 / 30d)
-        </button>
-        <button
-          type="button"
-          onClick={() => setTab('seo_service')}
-          className={`min-h-[40px] px-4 rounded-lg text-xs font-semibold transition-colors ${
-            tab === 'seo_service' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
-          }`}
-        >
-          SEO Optimization Services (A–F)
-        </button>
-      </div>
+      {/* Category Switcher (shown only when both promotion and SEO packages are active) */}
+      {hasMultipleKinds && (
+        <div className="flex items-center gap-1 p-1 rounded-xl bg-slate-100 w-fit">
+          <button
+            type="button"
+            onClick={() => setTab('promotion')}
+            className={`min-h-[40px] px-4 rounded-lg text-xs font-semibold transition-colors ${
+              tab === 'promotion' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            Promotion Campaigns
+          </button>
+          <button
+            type="button"
+            onClick={() => setTab('seo_service')}
+            className={`min-h-[40px] px-4 rounded-lg text-xs font-semibold transition-colors ${
+              tab === 'seo_service' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            SEO Optimization Services
+          </button>
+        </div>
+      )}
 
       {error && (
         <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-xs font-medium text-red-700">
@@ -235,13 +260,13 @@ export const PackagesAndCheckoutView: React.FC<PackagesAndCheckoutViewProps> = (
 
       {videos.length === 0 && (
         <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 flex items-center justify-between gap-3 text-xs text-amber-900">
-          <span>Submit a YouTube video first before purchasing a promotion or SEO package.</span>
+          <span>Drop your YouTube video link and channel link first before paying your $1 promotion fee.</span>
           <button
             type="button"
             onClick={() => onSuccessNavigate('submit')}
             className="min-h-[38px] px-4 rounded-lg bg-amber-900 text-white font-semibold shrink-0"
           >
-            Submit Video
+            Drop Links
           </button>
         </div>
       )}
@@ -254,20 +279,36 @@ export const PackagesAndCheckoutView: React.FC<PackagesAndCheckoutViewProps> = (
       </div>
 
       {/* Package Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div
+        className={`grid gap-4 ${
+          filteredPackages.length === 1
+            ? 'grid-cols-1 max-w-xl'
+            : filteredPackages.length === 2
+              ? 'grid-cols-1 md:grid-cols-2 max-w-4xl'
+              : 'grid-cols-1 md:grid-cols-2 lg:grid-cols-4'
+        }`}
+      >
         {filteredPackages.map((pkg) => {
           const price = currency === 'NGN' ? pkg.price_ngn : pkg.price_usd;
+          const isVip = pkg.code === 'vip_membership' || pkg.code.startsWith('vip_');
           const isPopular = pkg.code === 'promo_7d' || pkg.code === 'seo_complete';
           return (
             <div
               key={pkg.id}
               className={`rounded-2xl border p-5 flex flex-col justify-between bg-white ${
-                isPopular ? 'border-blue-600 ring-1 ring-blue-600/15' : 'border-slate-200'
+                isVip
+                  ? 'border-amber-400 ring-1 ring-amber-400/30 bg-gradient-to-b from-amber-50/40 to-white'
+                  : isPopular
+                    ? 'border-blue-600 ring-1 ring-blue-600/15'
+                    : 'border-slate-200'
               }`}
             >
               <div>
                 <div className="flex items-center justify-between gap-2">
-                  <h2 className="text-base font-bold text-slate-900">{pkg.name}</h2>
+                  <h2 className="text-base font-bold text-slate-900 inline-flex items-center gap-1.5">
+                    {isVip && <Crown className="w-4 h-4 text-amber-500 shrink-0" />}
+                    <span>{pkg.name}</span>
+                  </h2>
                   {pkg.duration_days > 0 && (
                     <span className="text-xs font-mono text-slate-500">{pkg.duration_days}d</span>
                   )}
@@ -292,12 +333,14 @@ export const PackagesAndCheckoutView: React.FC<PackagesAndCheckoutViewProps> = (
                 disabled={videos.length === 0}
                 onClick={() => setSelectedPkg(pkg)}
                 className={`mt-6 w-full min-h-[44px] rounded-xl text-sm font-semibold transition-colors disabled:opacity-50 ${
-                  isPopular
-                    ? 'bg-blue-700 text-white hover:bg-blue-800'
-                    : 'border border-slate-200 bg-slate-50 text-slate-900 hover:bg-slate-100'
+                  isVip
+                    ? 'bg-slate-900 text-white hover:bg-slate-800'
+                    : isPopular
+                      ? 'bg-blue-700 text-white hover:bg-blue-800'
+                      : 'border border-slate-200 bg-slate-50 text-slate-900 hover:bg-slate-100'
                 }`}
               >
-                Review Deliverables &amp; Select
+                {isVip ? 'Pay $1 Membership & Promote' : 'Review Deliverables & Select'}
               </button>
             </div>
           );
@@ -335,6 +378,11 @@ export const PackagesAndCheckoutView: React.FC<PackagesAndCheckoutViewProps> = (
               <p className="text-xs text-slate-500">
                 Video: {videos.find((v) => v.id === selectedVideoId)?.title || 'Selected Video'}
               </p>
+              {videos.find((v) => v.id === selectedVideoId)?.channel_url && (
+                <p className="text-xs text-slate-500 truncate">
+                  Channel: {videos.find((v) => v.id === selectedVideoId)?.channel_url}
+                </p>
+              )}
               <ul className="pt-2 space-y-1 text-xs text-slate-700">
                 {selectedPkg.deliverables.map((d, i) => (
                   <li key={i}>• {d}</li>
@@ -360,8 +408,8 @@ export const PackagesAndCheckoutView: React.FC<PackagesAndCheckoutViewProps> = (
               <label className="block text-xs font-semibold text-slate-700 mb-1.5">Payment Provider</label>
               <div className="grid grid-cols-3 gap-2">
                 {[
-                  { id: 'paystack' as const, label: 'Paystack' },
                   { id: 'flutterwave' as const, label: 'Flutterwave' },
+                  { id: 'paystack' as const, label: 'Paystack' },
                   { id: 'sandbox' as const, label: 'Test Gateway' },
                 ].map((p) => (
                   <button
@@ -433,10 +481,11 @@ export const PackagesAndCheckoutView: React.FC<PackagesAndCheckoutViewProps> = (
                 <a
                   href={checkoutSession.checkoutUrl}
                   target="_blank"
-                  rel="noreferrer"
-                  className="w-full min-h-[48px] rounded-xl bg-blue-700 text-white text-sm font-semibold hover:bg-blue-800 flex items-center justify-center"
+                  rel="noopener noreferrer"
+                  className="w-full min-h-[48px] rounded-xl bg-blue-700 text-white text-sm font-semibold hover:bg-blue-800 flex items-center justify-center gap-2"
                 >
-                  Open {checkoutSession.provider.toUpperCase()} Checkout
+                  <span>Pay with {checkoutSession.provider.toUpperCase()}</span>
+                  <ExternalLink className="w-4 h-4" />
                 </a>
                 <button
                   type="button"
@@ -444,7 +493,7 @@ export const PackagesAndCheckoutView: React.FC<PackagesAndCheckoutViewProps> = (
                   onClick={() => handleServerVerify('succeed')}
                   className="w-full min-h-[44px] rounded-xl border border-slate-200 bg-white text-slate-900 text-xs font-semibold hover:bg-slate-50"
                 >
-                  {processing ? 'Verifying...' : 'Verify Payment Status on Server'}
+                  {processing ? 'Verifying...' : "I've Completed Payment — Verify Status"}
                 </button>
               </div>
             ) : (

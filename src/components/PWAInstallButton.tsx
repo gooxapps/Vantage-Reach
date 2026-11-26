@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Download, MonitorSmartphone, Share, Smartphone, X } from 'lucide-react';
 import { usePWAInstall } from '../hooks/usePWAInstall';
+import { useSiteConfig } from '../lib/siteConfig';
 
 interface PWAInstallButtonProps {
   compact?: boolean;
@@ -12,6 +13,7 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
   showFallback = false,
 }) => {
   const { isInstallable, isInstalled, isIOS, platformHint, install } = usePWAInstall();
+  const { siteConfig } = useSiteConfig();
   const [showGuide, setShowGuide] = useState(false);
 
   if (isInstalled) {
@@ -42,14 +44,14 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
         ? 'Install on Mac'
         : platformHint === 'desktop-windows'
           ? 'Install on Windows PC'
-          : 'Install Vantage Reach App';
+          : `Install ${siteConfig.appName} App`;
 
   return (
     <>
       <button
         type="button"
         onClick={handleClick}
-        aria-label="Install Vantage Reach App"
+        aria-label={`Install ${siteConfig.appName} App`}
         className={`inline-flex items-center justify-center gap-1.5 rounded-xl font-semibold transition-colors whitespace-nowrap shrink-0 ${
           isInstallable
             ? 'border border-blue-200 bg-blue-50 text-[#2563EB] hover:bg-blue-100'
@@ -121,13 +123,13 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
                   2. Select <strong>Install app</strong> or <strong>Add to Home screen</strong>.
                 </li>
                 <li>
-                  3. Confirm <strong>Install</strong> to add Vantage Reach to your home screen with automatic update syncing.
+                  3. Confirm <strong>Install</strong> to add {siteConfig.appName} to your home screen with automatic update syncing.
                 </li>
               </ol>
             ) : (
               <ol className="space-y-2.5 text-sm text-slate-600 leading-relaxed">
                 <li>
-                  1. In <strong>Chrome</strong> or <strong>Edge</strong>, click the <strong>Install icon</strong> in the right side of the address bar (or open Browser Menu → <strong>Install Vantage Reach</strong>).
+                  1. In <strong>Chrome</strong> or <strong>Edge</strong>, click the <strong>Install icon</strong> in the right side of the address bar (or open Browser Menu → <strong>Install {siteConfig.appName}</strong>).
                 </li>
                 <li>
                   2. On <strong>Mac Safari</strong>, click <strong>File → Add to Dock</strong>.

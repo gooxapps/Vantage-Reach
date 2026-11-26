@@ -9,6 +9,7 @@ import {
   ChevronDown,
   ChevronUp,
   Clock,
+  Crown,
   Eye,
   FileText,
   Info,
@@ -38,6 +39,8 @@ interface VideoIntelligenceViewProps {
   selectedVideoId: number | null;
   onSelectVideo: (id: number) => void;
   onNavigate: (tab: string, videoId?: number) => void;
+  isVip?: boolean;
+  onJoinVip?: (video: VideoRecord) => void;
 }
 
 interface VideoDetailResponse {
@@ -82,6 +85,8 @@ export const VideoIntelligenceView: React.FC<VideoIntelligenceViewProps> = ({
   selectedVideoId,
   onSelectVideo,
   onNavigate,
+  isVip = false,
+  onJoinVip,
 }) => {
   const [videos, setVideos] = useState<VideoRecord[]>([]);
   const [detail, setDetail] = useState<VideoDetailResponse | null>(null);
@@ -421,6 +426,32 @@ export const VideoIntelligenceView: React.FC<VideoIntelligenceViewProps> = ({
         )}
       </section>
 
+      {detail?.video && onJoinVip && !isVip && (
+        <section className="rounded-2xl border border-blue-200 bg-gradient-to-r from-slate-900 to-blue-950 text-white p-3.5 sm:p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-9 h-9 rounded-xl bg-amber-400/20 text-amber-300 flex items-center justify-center shrink-0">
+              <Crown className="w-5 h-5" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-xs sm:text-sm font-bold text-white truncate">
+                Promote This Video — $1 Membership Only
+              </p>
+              <p className="text-[11px] sm:text-xs text-slate-300">
+                Once you drop your video, pay the $1 membership fee via Flutterwave so our team can promote and work on it.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => onJoinVip(detail.video)}
+            className="min-h-[42px] px-4 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-extrabold inline-flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0"
+          >
+            <Crown className="w-3.5 h-3.5" />
+            <span>Promote Video — $1</span>
+          </button>
+        </section>
+      )}
+
       {error && (
         <div
           role="alert"
@@ -599,10 +630,10 @@ export const VideoIntelligenceView: React.FC<VideoIntelligenceViewProps> = ({
               <div>
                 <h2 className="text-sm sm:text-base font-bold text-slate-900 flex items-center gap-2">
                   <Sparkles className="w-4 h-4 text-[#2563EB]" />
-                  <span>Gemini AI Video Intelligence</span>
+                  <span>AI SEO Analyzer</span>
                 </h2>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Uses your retrieved YouTube metadata{detail.competitors.length > 0 ? ' and live competitor data' : ''}.
+                  Quick AI analysis of your video title, keywords, and description{detail.competitors.length > 0 ? ' with live competitor data' : ''}.
                 </p>
               </div>
 
@@ -648,10 +679,10 @@ export const VideoIntelligenceView: React.FC<VideoIntelligenceViewProps> = ({
                   <Sparkles className="w-4 h-4" />
                   <span>
                     {analyzingAi
-                      ? 'Analysing with Gemini...'
+                      ? 'Analyzing SEO with AI...'
                       : activeAnalysis
-                        ? 'Re-run SEO Analysis'
-                        : 'Run Gemini SEO Analysis'}
+                        ? 'Re-run AI SEO Analyzer'
+                        : 'Run AI SEO Analyzer'}
                   </span>
                 </button>
               </div>
@@ -701,9 +732,9 @@ export const VideoIntelligenceView: React.FC<VideoIntelligenceViewProps> = ({
               <div className="w-12 h-12 rounded-full bg-blue-50 text-[#2563EB] mx-auto flex items-center justify-center">
                 <Sparkles className="w-6 h-6" />
               </div>
-              <h3 className="text-base font-bold text-slate-900 mt-3">Ready to Analyse Your Video</h3>
+              <h3 className="text-base font-bold text-slate-900 mt-3">Ready to Analyze Your Video SEO</h3>
               <p className="text-xs sm:text-sm text-slate-500 mt-1 max-w-md mx-auto leading-relaxed">
-                Click <strong>Run Gemini SEO Analysis</strong> above to evaluate your title, description, search intent alignment, and keyword opportunities using real retrieved metadata.
+                Click <strong>Run AI SEO Analyzer</strong> above for a quick AI check of your title, keywords, and description.
               </p>
             </section>
           )}

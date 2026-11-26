@@ -16,13 +16,52 @@ export interface InitPaymentParams {
   description: string;
 }
 
+export interface FlutterwaveCredentials {
+  publicKey: string;
+  secretKey: string;
+  encryptionKey: string;
+  webhookHash: string;
+}
+
+export async function getFlutterwaveCredentials(): Promise<FlutterwaveCredentials> {
+  const rows = await db.queryAll<{ key: string; value: string }>(
+    `SELECT key, value FROM system_settings
+     WHERE key IN ('flutterwave_public_key', 'flutterwave_secret_key', 'flutterwave_encryption_key', 'flutterwave_webhook_hash')`
+  );
+  const map = new Map<string, string>();
+  for (const r of rows) {
+    map.set(r.key, String(r.value || '').trim());
+  }
+  return {
+    publicKey: map.get('flutterwave_public_key') || process.env.FLUTTERWAVE_PUBLIC_KEY?.trim() || '',
+    secretKey: map.get('flutterwave_secret_key') || process.env.FLUTTERWAVE_SECRET_KEY?.trim() || '',
+    encryptionKey: map.get('flutterwave_encryption_key') || process.env.FLUTTERWAVE_ENCRYPTION_KEY?.trim() || '',
+    webhookHash: map.get('flutterwave_webhook_hash') || process.env.FLUTTERWAVE_WEBHOOK_HASH?.trim() || '',
+  };
+}
+
 export async function getActiveDefaultProvider(): Promise<PaymentProviderName> {
   const row = await db.queryOne<{ value: string }>(
     `SELECT value FROM system_settings WHERE key = 'payment_default_provider'`
   );
   const v = row?.value;
   if (v === 'paystack' || v === 'flutterwave' || v === 'sandbox') return v;
-  return 'paystack';
+  return 'flutterwave';
+}
+
+export async function getPaymentGatewayStatus() {
+  const [defaultProvider, flw] = await Promise.all([
+    getActiveDefaultProvider(),
+    getFlutterwaveCredentials(),
+  ]);
+  return {
+    defaultProvider,
+    flutterwaveConfigured: Boolean(flw.secretKey),
+    flutterwaveHasPublicKey: Boolean(flw.publicKey),
+    flutterwaveHasEncryptionKey: Boolean(flw.encryptionKey),
+    flutterwaveHasWebhookHash: Boolean(flw.webhookHash),
+    paystackConfigured: Boolean(process.env.PAYSTACK_SECRET_KEY?.trim()),
+  };
 }
 
 export async function initializePayment(params: InitPaymentParams) {
@@ -97,11 +136,20 @@ export async function initializePayment(params: InitPaymentParams) {
     };
   }
 
-  if (params.provider === 'flutterwave' && process.env.FLUTTERWAVE_SECRET_KEY) {
+  const flw = params.provider === 'flutterwave' ? await getFlutterwaveCredentials() : null;
+  if (params.provider === 'flutterwave' && flw?.secretKey) {
+    const brandRows = await db.queryAll<{ key: string; value: string }>(
+      `SELECT key, value FROM system_settings WHERE key IN ('site_app_name', 'site_logo_url')`
+    );
+    const brandMap = new Map(brandRows.map((r) => [r.key, String(r.value || '').trim()]));
+    const siteTitle = brandMap.get('site_app_name') || 'Vantage Reach';
+    const rawLogo = brandMap.get('site_logo_url') || '';
+    const safeHttpsLogo = rawLogo.startsWith('https://') ? rawLogo : undefined;
+
     const res = await fetch('https://api.flutterwave.com/v3/payments', {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${process.env.FLUTTERWAVE_SECRET_KEY}`,
+        Authorization: `Bearer ${flw.secretKey}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
@@ -112,8 +160,9 @@ export async function initializePayment(params: InitPaymentParams) {
         payment_options: 'card,banktransfer,ussd,mobilemoneyghana,mpesa,account',
         customer: { email: params.email },
         customizations: {
-          title: 'Vantage Reach',
+          title: siteTitle,
           description: params.description,
+          ...(safeHttpsLogo ? { logo: safeHttpsLogo } : {}),
         },
         meta: {
           userId: params.userId,
@@ -143,7 +192,7 @@ export async function initializePayment(params: InitPaymentParams) {
     };
   }
 
-  // Test / Sandbox Checkout Mode when live merchant keys are not set in environment
+  // Test / Sandbox Checkout Mode when live merchant keys are not set in environment or Admin settings
   const payment = await db.queryOne(`SELECT * FROM payments WHERE id = ?`, [paymentId]);
   return {
     payment,
@@ -152,8 +201,8 @@ export async function initializePayment(params: InitPaymentParams) {
     requiresServerVerify: true,
     notice:
       params.provider === 'sandbox'
-        ? 'Using Vantage Sandbox Checkout for server-side verification testing.'
-        : `${params.provider.toUpperCase()} live secret key is not set on server; routed to secure Sandbox Verification mode.`,
+        ? 'Using Sandbox Checkout for server-side verification testing.'
+        : `${params.provider.toUpperCase()} live secret key is not connected yet. Add your ${params.provider.toUpperCase()} keys in Admin Console → Flutterwave & APIs (or server environment) to accept live payments, or use Sandbox Verification below.`,
   };
 }
 
@@ -183,8 +232,10 @@ export async function verifyPaymentOnServer(
   }
 
   let verifiedOk = false;
+  let stillPending = false;
   let failureReason = '';
   let providerRef = options.providerTransactionId || `VER-${txRef}`;
+  const flw = payment.provider === 'flutterwave' ? await getFlutterwaveCredentials() : null;
 
   if (payment.provider === 'paystack' && process.env.PAYSTACK_SECRET_KEY) {
     const res = await fetch(`https://api.paystack.co/transaction/verify/${encodeURIComponent(txRef)}`, {
@@ -209,13 +260,13 @@ export async function verifyPaymentOnServer(
     } else {
       failureReason = data.data?.status || data.message || 'Paystack verification declined';
     }
-  } else if (payment.provider === 'flutterwave' && process.env.FLUTTERWAVE_SECRET_KEY) {
+  } else if (payment.provider === 'flutterwave' && flw?.secretKey) {
     const verifyEndpoint = options.providerTransactionId
       ? `https://api.flutterwave.com/v3/transactions/${encodeURIComponent(options.providerTransactionId)}/verify`
       : `https://api.flutterwave.com/v3/transactions/verify_by_reference?tx_ref=${encodeURIComponent(txRef)}`;
 
     const res = await fetch(verifyEndpoint, {
-      headers: { Authorization: `Bearer ${process.env.FLUTTERWAVE_SECRET_KEY}` },
+      headers: { Authorization: `Bearer ${flw.secretKey}` },
     });
     const data = (await res.json()) as {
       status?: string;
@@ -224,21 +275,24 @@ export async function verifyPaymentOnServer(
     };
     const paidAmount = Number(data.data?.amount || 0);
     const paidCurrency = String(data.data?.currency || '').toUpperCase();
+    const flwStatus = String(data.data?.status || '').toLowerCase();
     if (
       res.ok &&
       data.status === 'success' &&
-      data.data?.status === 'successful' &&
+      flwStatus === 'successful' &&
       data.data?.tx_ref === txRef &&
       paidAmount >= Number(payment.amount) &&
       paidCurrency === payment.currency.toUpperCase()
     ) {
       verifiedOk = true;
       providerRef = String(data.data.id || providerRef);
+    } else if (flwStatus === 'failed' || flwStatus === 'cancelled' || options.simulateOutcome === 'fail') {
+      failureReason = `Flutterwave status: ${data.data?.status || 'failed'}`;
     } else {
+      stillPending = true;
       failureReason =
-        data.data?.status && data.data.status !== 'successful'
-          ? `Flutterwave status: ${data.data.status}`
-          : data.message || 'Flutterwave verification declined';
+        data.message ||
+        'Payment has not been completed on Flutterwave yet. Complete checkout first, then verify again.';
     }
   } else {
     // Sandbox verification path (never trusts browser redirect alone; executed server-side)
@@ -248,6 +302,10 @@ export async function verifyPaymentOnServer(
     } else {
       verifiedOk = true;
     }
+  }
+
+  if (stillPending && !verifiedOk) {
+    return { payment, alreadyVerified: false, verified: false, pending: true, failureReason };
   }
 
   await db.transaction(async (tx) => {
@@ -285,11 +343,39 @@ export async function verifyPaymentOnServer(
           ]
         );
 
-        await tx.execute(
-          `INSERT INTO notifications (user_id, title, message, category, link_path)
-           VALUES (?, 'Campaign Payment Verified', ?, 'billing', '/campaigns')`,
-          [payment.user_id, `Payment ${payment.tx_ref} was verified. Your promotion campaign is now under review.`]
+        const cmpPkg = await tx.queryOne<{ code: string; name: string; duration_days: number }>(
+          `SELECT p.code, p.name, c.duration_days
+           FROM campaigns c
+           LEFT JOIN packages p ON p.id = c.package_id
+           WHERE c.id = ?`,
+          [payment.campaign_id]
         );
+        const isVipPkg = Boolean(cmpPkg && (cmpPkg.code === 'vip_membership' || cmpPkg.code.startsWith('vip_')));
+        if (isVipPkg) {
+          const days = Math.max(1, Number(cmpPkg?.duration_days || 30));
+          const vipExpiresAt = new Date(Date.now() + days * 86_400_000).toISOString();
+          await tx.execute(
+            `UPDATE user_profiles
+             SET vip_status = 'active', vip_expires_at = ?, updated_at = ${nowExpr}
+             WHERE user_id = ?`,
+            [vipExpiresAt, payment.user_id]
+          );
+          await tx.execute(
+            `INSERT INTO notifications (user_id, title, message, category, link_path)
+             VALUES (?, ?, ?, 'billing', '/intelligence')`,
+            [
+              payment.user_id,
+              `Welcome to ${cmpPkg?.name || 'Creator VIP Club'}!`,
+              `Your $1 Creator VIP Club membership (${payment.tx_ref}) is now active! Your video has been placed in our priority discovery queue.`,
+            ]
+          );
+        } else {
+          await tx.execute(
+            `INSERT INTO notifications (user_id, title, message, category, link_path)
+             VALUES (?, 'Campaign Payment Verified', ?, 'billing', '/campaigns')`,
+            [payment.user_id, `Payment ${payment.tx_ref} was verified. Your promotion campaign is now under review.`]
+          );
+        }
       }
 
       if (payment.seo_order_id) {
@@ -354,7 +440,11 @@ function timingSafeEqualStr(a: string, b: string): boolean {
   return crypto.timingSafeEqual(bufA, bufB);
 }
 
-export function verifyWebhookSignature(provider: string, rawBody: string, headers: Record<string, string | string[] | undefined>): boolean {
+export async function verifyWebhookSignature(
+  provider: string,
+  rawBody: string,
+  headers: Record<string, string | string[] | undefined>
+): Promise<boolean> {
   if (provider === 'paystack') {
     const secret = process.env.PAYSTACK_SECRET_KEY;
     const sig = String(headers['x-paystack-signature'] || '');
@@ -363,7 +453,8 @@ export function verifyWebhookSignature(provider: string, rawBody: string, header
     return timingSafeEqualStr(sig, expected);
   }
   if (provider === 'flutterwave') {
-    const expectedHash = process.env.FLUTTERWAVE_WEBHOOK_HASH;
+    const flw = await getFlutterwaveCredentials();
+    const expectedHash = flw.webhookHash;
     const sig = String(headers['verif-hash'] || '');
     return Boolean(expectedHash && timingSafeEqualStr(sig, expectedHash));
   }

@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { usePWAInstall } from '../hooks/usePWAInstall';
 import { api, formatCurrency, formatDateTime, formatStatusLabel } from '../lib/api';
+import { useSiteConfig } from '../lib/siteConfig';
 import type { NotificationRecord, PaymentRecord, UserSession } from '../types';
 import { PWAInstallButton } from './PWAInstallButton';
 
@@ -32,6 +33,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   onOpenAdmin,
   onOpenNotification,
 }) => {
+  const { siteConfig } = useSiteConfig();
   const { isInstalled, updateState, lastSyncedAt, buildId, checkForUpdate } = usePWAInstall();
   const [fullName, setFullName] = useState(user.fullName || '');
   const [phone, setPhone] = useState('');
@@ -136,7 +138,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
       await api.post('/api/support', { subject: supportSubject, message: supportMessage });
       setSupportSubject('');
       setSupportMessage('');
-      setMessage('Support request submitted to Vantage Talent Search Global.');
+      setMessage(`Support request submitted to ${siteConfig.companyName}.`);
     } catch (err: any) {
       setError(err.message || 'Failed to submit support message.');
     }
@@ -154,7 +156,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
         <div>
           <h1 className="text-2xl font-bold text-slate-900">Profile &amp; Settings</h1>
           <p className="text-sm text-slate-500 mt-0.5">
-            {user.email} · Vantage Reach Account
+            {user.email} · {siteConfig.appName} Account
           </p>
         </div>
 
@@ -231,7 +233,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
             </span>
           </div>
           <p className="text-xs text-slate-500 leading-relaxed">
-            Install Vantage Reach on Android, iPhone, iPad, Windows, or Mac. Any new features or fixes deployed to Vantage Reach sync automatically whenever you open the app online.
+            Install {siteConfig.appName} on Android, iPhone, iPad, Windows, or Mac. Any new features or fixes deployed to {siteConfig.appName} sync automatically whenever you open the app online.
           </p>
           <p className="text-[11px] text-slate-400">
             Build <span className="font-mono">{buildId}</span>
@@ -516,7 +518,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
             <span>Creator Support</span>
           </h2>
           <p className="text-xs text-slate-500">
-            Need help with a campaign, payment verification, or SEO order? Message Vantage Talent Search Global.
+            Need help with a campaign, payment verification, or SEO order? Message {siteConfig.companyName} ({siteConfig.supportEmail}).
           </p>
           <input
             type="text"

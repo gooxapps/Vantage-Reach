@@ -10,29 +10,26 @@ import {
   ChevronDown,
   Crown,
   Home,
-  LineChart,
   LogOut,
   Megaphone,
   Plus,
   PlusCircle,
   Rocket,
-  Sparkles,
   User,
   X,
 } from 'lucide-react';
 import { AdminConsoleView } from './components/AdminConsoleView';
 import { AuthViews } from './components/AuthViews';
-import { VantageLogo } from './components/BrandMark';
+import { BrandSplashScreen, VantageLogo } from './components/BrandMark';
 import { CampaignsView } from './components/CampaignsView';
+import { CreatorVipModal } from './components/CreatorVipModal';
 import { CustomerDashboard } from './components/CustomerDashboard';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import { PackagesAndCheckoutView } from './components/PackagesAndCheckoutView';
 import { ProfileView } from './components/ProfileView';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { ReportsView } from './components/ReportsView';
-import { SeoAndCompetitorsView } from './components/SeoAndCompetitorsView';
 import { SubmitVideoView } from './components/SubmitVideoView';
-import { VideoIntelligenceView } from './components/VideoIntelligenceView';
 import { usePWAInstall } from './hooks/usePWAInstall';
 import {
   ApiError,
@@ -44,20 +41,13 @@ import {
   onUnauthorized,
   setAuthToken,
 } from './lib/api';
+import { useSiteConfig } from './lib/siteConfig';
 import { initVisitorTracker, trackScreenView } from './lib/visitorTracker';
-import type { NotificationRecord, UserSession } from './types';
+import type { NotificationRecord, UserSession, VideoRecord } from './types';
 
-type NavTab =
-  | 'dashboard'
-  | 'submit'
-  | 'intelligence'
-  | 'seo'
-  | 'plans'
-  | 'campaigns'
-  | 'reports'
-  | 'profile';
+type NavTab = 'dashboard' | 'submit' | 'plans' | 'campaigns' | 'reports' | 'profile';
 
-const VALID_TABS: NavTab[] = ['dashboard', 'submit', 'intelligence', 'seo', 'plans', 'campaigns', 'reports', 'profile'];
+const VALID_TABS: NavTab[] = ['dashboard', 'submit', 'plans', 'campaigns', 'reports', 'profile'];
 const ACTIVE_TAB_KEY = 'vr_active_tab';
 
 function getInitials(fullName: string, email: string): string {
@@ -70,10 +60,15 @@ function getInitials(fullName: string, email: string): string {
 }
 
 export default function App() {
+  const { siteConfig } = useSiteConfig();
+  const [bootSplashDone, setBootSplashDone] = useState(
+    () => !siteConfig.splashEnabled || siteConfig.splashDurationMs <= 0
+  );
   const [user, setUser] = useState<UserSession | null>(null);
   const [checkingAuth, setCheckingAuth] = useState(true);
   const [activeTab, setActiveTab] = useState<NavTab>('dashboard');
   const [selectedVideoId, setSelectedVideoId] = useState<number | null>(null);
+  const [vipOfferVideo, setVipOfferVideo] = useState<VideoRecord | null>(null);
   const [paymentBanner, setPaymentBanner] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [paymentSyncSeq, setPaymentSyncSeq] = useState(0);
 
@@ -125,6 +120,17 @@ export default function App() {
   const isAdminRef = useRef(false);
   isAuthedRef.current = Boolean(user);
   isAdminRef.current = Boolean(user?.isAdmin);
+
+  useEffect(() => {
+    if (bootSplashDone) return;
+    const ms = Math.min(4000, Math.max(0, siteConfig.splashDurationMs || 900));
+    if (!siteConfig.splashEnabled || ms === 0) {
+      setBootSplashDone(true);
+      return;
+    }
+    const timer = window.setTimeout(() => setBootSplashDone(true), ms);
+    return () => window.clearTimeout(timer);
+  }, [bootSplashDone, siteConfig.splashEnabled, siteConfig.splashDurationMs]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -204,6 +210,7 @@ export default function App() {
             });
             setPaymentSyncSeq((n) => n + 1);
             window.dispatchEvent(new CustomEvent('vantage:app-sync'));
+            void refreshMe(false);
             fetchNotifications();
           } else {
             setPaymentBanner({
@@ -224,12 +231,12 @@ export default function App() {
   useEffect(() => {
     if (user) {
       if (user.isAdmin) {
-        trackScreenView('/admin', 'Vantage Reach Admin');
+        trackScreenView('/admin', `${siteConfig.appName} Admin`);
       } else {
-        trackScreenView(`/${activeTab}`, `Vantage Reach · ${activeTab}`);
+        trackScreenView(`/${activeTab}`, `${siteConfig.appName} · ${activeTab}`);
       }
     }
-  }, [activeTab, user?.id, user?.isAdmin]);
+  }, [activeTab, user?.id, user?.isAdmin, siteConfig.appName]);
 
   useEffect(() => {
     if (!user || user.isAdmin) return;
@@ -320,20 +327,11 @@ export default function App() {
   ): { tab: NavTab; label: string; videoId?: number } | null => {
     const p = (linkPath || '').trim();
     if (!p) return null;
-    if (p.includes('submit')) return { tab: 'submit', label: 'Submit a Video' };
-    if (p.includes('campaign')) return { tab: 'campaigns', label: 'View My Campaigns' };
-    if (p.includes('seo')) return { tab: 'seo', label: 'Open SEO & Competitors' };
-    if (p.includes('plan')) return { tab: 'plans', label: 'Explore Plans' };
+    if (p.includes('submit')) return { tab: 'submit', label: 'Drop Video & Channel' };
+    if (p.includes('campaign') || p.includes('video')) return { tab: 'campaigns', label: 'View My Campaigns' };
+    if (p.includes('plan') || p.includes('seo')) return { tab: 'plans', label: 'Promote ($1 VIP)' };
     if (p.includes('report')) return { tab: 'reports', label: 'View Reports' };
     if (p.includes('profile')) return { tab: 'profile', label: 'Open Profile & Settings' };
-    if (p.includes('video')) {
-      const match = p.match(/\/videos\/(\d+)/);
-      return {
-        tab: 'intelligence',
-        label: 'Open Video Intelligence',
-        videoId: match ? Number(match[1]) : undefined,
-      };
-    }
     if (p === '/') return { tab: 'dashboard', label: 'Go to Dashboard' };
     return null;
   };
@@ -352,12 +350,26 @@ export default function App() {
     }
   };
 
+  if (!bootSplashDone) {
+    return (
+      <>
+        <OfflineIndicator />
+        <BrandSplashScreen config={siteConfig} onSkip={() => setBootSplashDone(true)} />
+      </>
+    );
+  }
+
   if (checkingAuth) {
     return (
       <div className="min-h-screen bg-white flex items-center justify-center">
         <div className="flex flex-col items-center gap-3">
-          <VantageLogo size={44} />
-          <p className="text-xs font-semibold text-slate-500">Loading Vantage Reach...</p>
+          <VantageLogo
+            size={44}
+            logoUrl={siteConfig.logoUrl}
+            alt={siteConfig.appName}
+            accentColor={siteConfig.themeColor}
+          />
+          <p className="text-xs font-semibold text-slate-500">Loading {siteConfig.appName}...</p>
         </div>
       </div>
     );
@@ -390,7 +402,12 @@ export default function App() {
     return (
       <>
         <OfflineIndicator />
-        <AdminConsoleView user={user} onLogout={handleLogout} updateState={updateState} />
+        <AdminConsoleView
+          user={user}
+          onLogout={handleLogout}
+          onUserUpdated={() => void refreshMe(false)}
+          updateState={updateState}
+        />
       </>
     );
   }
@@ -404,10 +421,8 @@ export default function App() {
     icon: React.ComponentType<{ className?: string }>;
   }> = [
     { id: 'dashboard', label: 'Dashboard', icon: Home },
-    { id: 'submit', label: 'Submit Video', icon: PlusCircle },
-    { id: 'intelligence', label: 'Video Intelligence', icon: LineChart },
-    { id: 'seo', label: 'SEO & Competitors', icon: Sparkles },
-    { id: 'plans', label: 'Plans & Services', icon: Crown },
+    { id: 'submit', label: 'Drop Video', icon: PlusCircle },
+    { id: 'plans', label: 'Promote ($1 VIP)', icon: Crown },
     { id: 'campaigns', label: 'My Campaigns', icon: Rocket },
     { id: 'reports', label: 'Reports', icon: BarChart3 },
     { id: 'profile', label: 'Profile & Settings', icon: User },
@@ -423,15 +438,12 @@ export default function App() {
           className="fixed top-14 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 rounded-xl border border-blue-200 bg-blue-50 px-4 py-2 text-xs font-semibold text-[#1D4ED8] shadow-md whitespace-nowrap"
         >
           <span className="h-2 w-2 rounded-full bg-[#2563EB] animate-ping" />
-          <span>Syncing latest Vantage Reach update...</span>
+          <span>Syncing latest {siteConfig.appName} update...</span>
         </div>
       )}
 
       {/* Subtle Top-Right Decorative Wash matching Mobile Dashboard Reference */}
-      {(activeTab === 'dashboard' ||
-        activeTab === 'campaigns' ||
-        activeTab === 'submit' ||
-        activeTab === 'intelligence') && (
+      {(activeTab === 'dashboard' || activeTab === 'campaigns' || activeTab === 'submit') && (
         <div
           aria-hidden="true"
           className="lg:hidden pointer-events-none absolute top-0 right-0 w-64 h-64 rounded-full bg-blue-50/85 blur-2xl -translate-y-14 translate-x-14"
@@ -441,9 +453,14 @@ export default function App() {
       {/* Desktop Left Sidebar */}
       <aside className="hidden lg:flex lg:w-64 lg:flex-col lg:fixed lg:inset-y-0 bg-white border-r border-slate-200 z-30">
         <div className="h-16 px-5 flex items-center gap-3 border-b border-slate-100">
-          <VantageLogo size={34} />
-          <span className="text-base font-extrabold text-slate-900 font-display tracking-tight whitespace-nowrap">
-            Vantage Reach
+          <VantageLogo
+            size={34}
+            logoUrl={siteConfig.logoUrl}
+            alt={siteConfig.appName}
+            accentColor={siteConfig.themeColor}
+          />
+          <span className="text-base font-extrabold text-slate-900 font-display tracking-tight truncate">
+            {siteConfig.appName}
           </span>
         </div>
 
@@ -471,8 +488,16 @@ export default function App() {
 
         <div className="p-4 border-t border-slate-100 space-y-2.5">
           <PWAInstallButton />
-          <div className="text-xs text-slate-500 truncate">
-            Signed in as <strong className="text-slate-800">{user.fullName || user.email}</strong>
+          <div className="text-xs text-slate-500 truncate flex items-center gap-1.5">
+            <span className="truncate">
+              Signed in as <strong className="text-slate-800">{user.fullName || user.email}</strong>
+            </span>
+            {user.isVip && (
+              <span className="inline-flex items-center gap-0.5 text-[10px] font-bold text-amber-700 shrink-0">
+                <Crown className="w-3 h-3" />
+                VIP
+              </span>
+            )}
           </div>
         </div>
       </aside>
@@ -486,18 +511,22 @@ export default function App() {
             type="button"
             onClick={() => handleNavigate('dashboard')}
             className="flex items-center gap-2 min-w-0 lg:hidden text-left min-h-[44px]"
-            aria-label="Vantage Reach Home"
+            aria-label={`${siteConfig.appName} Home`}
           >
-            <VantageLogo size={34} />
-            <span className="flex flex-col text-[15px] font-extrabold text-slate-900 font-display leading-[1.05] tracking-tight">
-              <span>Vantage</span>
-              <span>Reach</span>
+            <VantageLogo
+              size={34}
+              logoUrl={siteConfig.logoUrl}
+              alt={siteConfig.appName}
+              accentColor={siteConfig.themeColor}
+            />
+            <span className="text-[15px] font-extrabold text-slate-900 font-display leading-tight tracking-tight truncate max-w-[140px]">
+              {siteConfig.appName}
             </span>
           </button>
 
           {/* Desktop Breadcrumb */}
           <div className="hidden lg:flex items-center gap-4 text-xs font-medium text-slate-500">
-            <span>Vantage Talent Search Global</span>
+            <span>{siteConfig.companyName}</span>
             <span aria-hidden="true">·</span>
             <span className="text-slate-900 font-semibold">
               {sidebarItems.find((i) => i.id === activeTab)?.label || 'Dashboard'}
@@ -611,19 +640,19 @@ export default function App() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => handleNavigate('intelligence')}
+                    onClick={() => handleNavigate('submit')}
                     className="w-full min-h-[40px] px-3 rounded-xl text-left text-xs font-medium text-slate-700 hover:bg-slate-50 flex items-center gap-2.5"
                   >
-                    <LineChart className="w-4 h-4 text-slate-400" />
-                    <span>Video Intelligence</span>
+                    <PlusCircle className="w-4 h-4 text-slate-400" />
+                    <span>Drop Video &amp; Channel</span>
                   </button>
                   <button
                     type="button"
-                    onClick={() => handleNavigate('seo')}
+                    onClick={() => handleNavigate('campaigns')}
                     className="w-full min-h-[40px] px-3 rounded-xl text-left text-xs font-medium text-slate-700 hover:bg-slate-50 flex items-center gap-2.5"
                   >
-                    <Sparkles className="w-4 h-4 text-slate-400" />
-                    <span>SEO & Competitors</span>
+                    <Rocket className="w-4 h-4 text-slate-400" />
+                    <span>My Campaigns</span>
                   </button>
                   <button
                     type="button"
@@ -631,7 +660,7 @@ export default function App() {
                     className="w-full min-h-[40px] px-3 rounded-xl text-left text-xs font-medium text-slate-700 hover:bg-slate-50 flex items-center gap-2.5"
                   >
                     <Crown className="w-4 h-4 text-slate-400" />
-                    <span>Plans & Services</span>
+                    <span>Promote ($1 VIP)</span>
                   </button>
                   <div className="border-t border-slate-100 mt-1 pt-1">
                     <button
@@ -651,6 +680,11 @@ export default function App() {
 
         {/* Scrollable Workspace Content (generous bottom padding prevents fixed bottom nav overlap) */}
         <main className="flex-1 w-full max-w-6xl mx-auto px-4 sm:px-6 pt-3 pb-28 lg:py-6 lg:pb-10">
+          {siteConfig.announcementBanner && (
+            <div className="mb-4 rounded-2xl border border-blue-200 bg-blue-50 px-4 py-2.5 text-xs font-semibold text-blue-900">
+              {siteConfig.announcementBanner}
+            </div>
+          )}
           {paymentBanner && (
             <div
               role="status"
@@ -683,23 +717,9 @@ export default function App() {
             <SubmitVideoView
               onSubmitted={(video) => {
                 setSelectedVideoId(video.id);
-                setActiveTab('intelligence');
+                setActiveTab('campaigns');
+                setVipOfferVideo(video);
               }}
-            />
-          )}
-          {activeTab === 'intelligence' && (
-            <VideoIntelligenceView
-              selectedVideoId={selectedVideoId}
-              onSelectVideo={setSelectedVideoId}
-              onNavigate={handleNavigate}
-            />
-          )}
-          {activeTab === 'seo' && (
-            <SeoAndCompetitorsView
-              key={`seo-${paymentSyncSeq}`}
-              selectedVideoId={selectedVideoId}
-              onSelectVideo={setSelectedVideoId}
-              onNavigate={handleNavigate}
             />
           )}
           {activeTab === 'plans' && (
@@ -723,6 +743,24 @@ export default function App() {
           )}
         </main>
       </div>
+
+      {vipOfferVideo && (
+        <CreatorVipModal
+          video={vipOfferVideo}
+          isAlreadyVip={Boolean(user.isVip)}
+          onClose={() => setVipOfferVideo(null)}
+          onVipActivated={() => {
+            setPaymentSyncSeq((n) => n + 1);
+            void refreshMe(false);
+            fetchNotifications();
+          }}
+          onViewCampaigns={() => {
+            setSelectedVideoId(vipOfferVideo.id);
+            setVipOfferVideo(null);
+            handleNavigate('campaigns');
+          }}
+        />
+      )}
 
       {/* Mobile Full-Width Notifications Bottom Sheet */}
       {notifOpen && (

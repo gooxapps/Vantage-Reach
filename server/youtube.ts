@@ -7,6 +7,7 @@ export interface YouTubeVideoDetails {
   description: string;
   channelId: string;
   channelName: string;
+  channelUrl?: string;
   thumbnailUrl: string;
   duration: string;
   publishedAt: string;
@@ -15,7 +16,7 @@ export interface YouTubeVideoDetails {
   commentCount: number | null;
   subscriberCount: number | null;
   subscribersHidden: boolean;
-  statsSource: 'youtube_data_api_v3' | 'youtube_oembed_partial';
+  statsSource: 'youtube_data_api_v3' | 'youtube_oembed_partial' | 'direct_submission';
   apiNotice?: string;
 }
 
@@ -127,6 +128,95 @@ export function extractYouTubeVideoId(rawUrl: string): {
     valid: true,
     videoId,
     canonicalUrl: `https://www.youtube.com/watch?v=${videoId}`,
+  };
+}
+
+export function validateYouTubeChannelUrl(rawUrl: string): {
+  valid: boolean;
+  canonicalUrl: string | null;
+  channelNameGuess: string;
+  error?: string;
+} {
+  const trimmed = rawUrl.trim();
+  if (!trimmed) {
+    return {
+      valid: false,
+      canonicalUrl: null,
+      channelNameGuess: '',
+      error: 'Please paste your YouTube channel link.',
+    };
+  }
+
+  if (/^@[a-zA-Z0-9._-]{2,60}$/.test(trimmed)) {
+    return {
+      valid: true,
+      canonicalUrl: `https://www.youtube.com/${trimmed}`,
+      channelNameGuess: trimmed,
+    };
+  }
+
+  let parsed: URL;
+  try {
+    if (/\s/.test(trimmed)) throw new Error('whitespace');
+    parsed = new URL(trimmed.startsWith('http://') || trimmed.startsWith('https://') ? trimmed : `https://${trimmed}`);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('protocol');
+    if (!parsed.hostname.includes('.')) throw new Error('domain');
+  } catch {
+    return {
+      valid: false,
+      canonicalUrl: null,
+      channelNameGuess: '',
+      error: 'Please enter a valid YouTube channel link (for example, https://www.youtube.com/@yourchannel).',
+    };
+  }
+
+  const host = parsed.hostname.toLowerCase().replace(/^www\./, '').replace(/^m\./, '');
+  if (host !== 'youtube.com') {
+    return {
+      valid: false,
+      canonicalUrl: null,
+      channelNameGuess: '',
+      error: 'Channel link must be a youtube.com URL (e.g. youtube.com/@channel or youtube.com/channel/...).',
+    };
+  }
+
+  const cleanPath = parsed.pathname.replace(/\/+$/, '');
+  const segments = cleanPath.split('/').filter(Boolean);
+  if (segments.length === 0) {
+    return {
+      valid: false,
+      canonicalUrl: null,
+      channelNameGuess: '',
+      error: 'Please paste the full YouTube channel link (e.g. youtube.com/@yourchannel).',
+    };
+  }
+
+  const first = segments[0];
+  const isHandle = first.startsWith('@') && first.length >= 3;
+  const isChannelPath = (first === 'channel' || first === 'c' || first === 'user') && Boolean(segments[1]);
+  const isCustomSlug = segments.length === 1 && !['watch', 'shorts', 'embed', 'live', 'playlist', 'feed', 'results'].includes(first.toLowerCase());
+
+  if (!isHandle && !isChannelPath && !isCustomSlug) {
+    return {
+      valid: false,
+      canonicalUrl: null,
+      channelNameGuess: '',
+      error: 'Please paste a YouTube channel link (such as youtube.com/@handle or youtube.com/channel/...), not a watch URL.',
+    };
+  }
+
+  const canonicalPath = isHandle
+    ? `/${first}`
+    : isChannelPath
+      ? `/${first}/${segments[1]}`
+      : `/${first}`;
+
+  const guess = isHandle ? first : segments[1] || first;
+
+  return {
+    valid: true,
+    canonicalUrl: `https://www.youtube.com${canonicalPath}`,
+    channelNameGuess: guess,
   };
 }
 
@@ -261,6 +351,7 @@ export async function fetchYouTubeVideoDetails(videoId: string): Promise<YouTube
     description: snippet.description || '',
     channelId: snippet.channelId || '',
     channelName: snippet.channelTitle || 'Unknown Channel',
+    channelUrl: snippet.channelId ? `https://www.youtube.com/channel/${snippet.channelId}` : undefined,
     thumbnailUrl,
     duration: formatIsoDuration(item.contentDetails?.duration),
     publishedAt: snippet.publishedAt || '',
@@ -270,6 +361,85 @@ export async function fetchYouTubeVideoDetails(videoId: string): Promise<YouTube
     subscriberCount,
     subscribersHidden,
     statsSource: 'youtube_data_api_v3',
+  };
+}
+
+export async function fetchYouTubeSubmissionDetails(params: {
+  videoId: string;
+  channelUrl?: string;
+  channelNameGuess?: string;
+  customTitle?: string;
+}): Promise<YouTubeVideoDetails> {
+  const apiKey = await getYouTubeApiKey();
+  const canonicalUrl = `https://www.youtube.com/watch?v=${params.videoId}`;
+  const fallbackThumb = `https://i.ytimg.com/vi/${params.videoId}/hqdefault.jpg`;
+
+  if (apiKey) {
+    try {
+      const apiDetails = await fetchYouTubeVideoDetails(params.videoId);
+      return {
+        ...apiDetails,
+        title: params.customTitle?.trim() || apiDetails.title,
+        channelUrl: params.channelUrl || apiDetails.channelUrl,
+      };
+    } catch {
+      // Fall through cleanly to oEmbed / direct submission
+    }
+  }
+
+  // Try official YouTube oEmbed (only uses our strictly validated 11-char videoId)
+  try {
+    const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(canonicalUrl)}&format=json`;
+    const oRes = await fetch(oembedUrl, { signal: AbortSignal.timeout(4000) });
+    if (oRes.ok) {
+      const oData = (await oRes.json()) as {
+        title?: string;
+        author_name?: string;
+        author_url?: string;
+        thumbnail_url?: string;
+      };
+      const oembedThumb =
+        oData.thumbnail_url && oData.thumbnail_url.startsWith('https://') ? oData.thumbnail_url : fallbackThumb;
+      return {
+        youtubeVideoId: params.videoId,
+        url: canonicalUrl,
+        title: params.customTitle?.trim() || oData.title?.trim() || `YouTube Video (${params.videoId})`,
+        description: '',
+        channelId: '',
+        channelName: oData.author_name?.trim() || params.channelNameGuess || 'YouTube Channel',
+        channelUrl: params.channelUrl || (oData.author_url?.startsWith('https://') ? oData.author_url : undefined),
+        thumbnailUrl: oembedThumb,
+        duration: '',
+        publishedAt: '',
+        viewCount: null,
+        likeCount: null,
+        commentCount: null,
+        subscriberCount: null,
+        subscribersHidden: false,
+        statsSource: 'youtube_oembed_partial',
+      };
+    }
+  } catch {
+    // Fall through cleanly to direct submission
+  }
+
+  return {
+    youtubeVideoId: params.videoId,
+    url: canonicalUrl,
+    title: params.customTitle?.trim() || `YouTube Video (${params.videoId})`,
+    description: '',
+    channelId: '',
+    channelName: params.channelNameGuess || 'YouTube Channel',
+    channelUrl: params.channelUrl,
+    thumbnailUrl: fallbackThumb,
+    duration: '',
+    publishedAt: '',
+    viewCount: null,
+    likeCount: null,
+    commentCount: null,
+    subscriberCount: null,
+    subscribersHidden: false,
+    statsSource: 'direct_submission',
   };
 }
 
