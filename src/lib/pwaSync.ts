@@ -29,7 +29,9 @@ let platformHintState: PlatformHint = 'desktop';
 let updateStateValue: UpdateSyncState = 'idle';
 let lastSyncedAtValue: string | null = null;
 let reloadingForUpdate = false;
+let userRequestedReload = false;
 let lastServerBootId: string | null = null;
+let updateSWFn: ((reloadPage?: boolean) => Promise<void>) | null = null;
 
 function notify() {
   for (const listener of listeners) {
@@ -77,7 +79,7 @@ function setUpdateState(next: UpdateSyncState) {
 }
 
 function triggerReloadForUpdate() {
-  if (reloadingForUpdate || typeof window === 'undefined') return;
+  if (!userRequestedReload || reloadingForUpdate || typeof window === 'undefined') return;
   reloadingForUpdate = true;
   setUpdateState('updating');
   window.setTimeout(() => {
@@ -87,14 +89,21 @@ function triggerReloadForUpdate() {
 
 async function checkServerVersionAndSync(manual = false): Promise<boolean> {
   if (typeof window === 'undefined' || !navigator.onLine) return false;
-  if (manual) setUpdateState('checking');
+  if (manual) {
+    userRequestedReload = true;
+    setUpdateState('checking');
+  }
 
   let updated = false;
   try {
     if (swRegistration) {
       await swRegistration.update();
-      if (swRegistration.waiting) {
-        swRegistration.waiting.postMessage({ type: 'SKIP_WAITING' });
+      if (manual && swRegistration.waiting) {
+        if (updateSWFn) {
+          await updateSWFn(true);
+        } else {
+          swRegistration.waiting.postMessage({ type: 'SKIP_WAITING' });
+        }
         updated = true;
       }
     }
@@ -107,17 +116,7 @@ async function checkServerVersionAndSync(manual = false): Promise<boolean> {
     if (res.ok) {
       const data = (await res.json()) as { bootId?: string; timestamp?: string };
       if (data.bootId) {
-        if (lastServerBootId && lastServerBootId !== data.bootId) {
-          // Backend or deployment restarted; clear non-API caches and check SW again
-          lastServerBootId = data.bootId;
-          try {
-            if (swRegistration) await swRegistration.update();
-          } catch {
-            // Ignore
-          }
-        } else {
-          lastServerBootId = data.bootId;
-        }
+        lastServerBootId = data.bootId;
       }
       lastSyncedAtValue = new Date().toISOString();
     }
@@ -126,6 +125,7 @@ async function checkServerVersionAndSync(manual = false): Promise<boolean> {
   }
 
   if (manual && !reloadingForUpdate && !updated) {
+    userRequestedReload = false;
     setUpdateState('up-to-date');
     window.setTimeout(() => {
       if (updateStateValue === 'up-to-date') {
@@ -171,20 +171,14 @@ export function initPwaSync() {
   }
 
   if ('serviceWorker' in navigator) {
-    let activeController = navigator.serviceWorker.controller;
-
-    // Whenever a new Service Worker takes control after an earlier controller was active
-    // (either from page load or after an earlier clientsClaim), reload once for the latest UI.
     navigator.serviceWorker.addEventListener('controllerchange', () => {
-      if (activeController) {
+      if (userRequestedReload) {
         triggerReloadForUpdate();
-      } else {
-        activeController = navigator.serviceWorker.controller;
       }
     });
 
     try {
-      registerSW({
+      const updateSW = registerSW({
         immediate: true,
         onRegisteredSW(_swUrl, registration) {
           if (!registration) return;
@@ -192,53 +186,34 @@ export function initPwaSync() {
           lastSyncedAtValue = new Date().toISOString();
           notify();
 
-          registration.addEventListener('updatefound', () => {
-            const installing = registration.installing;
-            if (!installing) return;
-            installing.addEventListener('statechange', () => {
-              if (installing.state === 'installed' && navigator.serviceWorker.controller) {
-                installing.postMessage({ type: 'SKIP_WAITING' });
-              }
-            });
-          });
-
-          // Check right away for any newer build deployed after installation
-          void checkServerVersionAndSync(false);
-
-          // Periodically check for updates every 60s while app is open & online
+          // Periodically check for updates in the background every 5 minutes without forcing a reload
           window.setInterval(() => {
             if (document.visibilityState === 'visible' && navigator.onLine) {
               void checkServerVersionAndSync(false);
             }
-          }, 60_000);
+          }, 300_000);
         },
         onNeedRefresh() {
-          if (swRegistration?.waiting) {
-            swRegistration.waiting.postMessage({ type: 'SKIP_WAITING' });
-          } else {
-            triggerReloadForUpdate();
-          }
+          // Wait for explicit user sync or next cold launch so active forms and tabs are never interrupted
+          notify();
         },
         onRegisterError() {
           // Ignore service worker registration errors in restricted preview iframes
         },
       });
+      updateSWFn = updateSW;
     } catch {
       // Non-fatal in environments that block service workers
     }
   }
 
-  // Automatically sync when returning to the installed app or reconnecting online
+  // Sync data quietly when returning to the app or reconnecting online
   const syncOnResume = () => {
     if (document.visibilityState === 'visible') {
-      void checkServerVersionAndSync(false);
       window.dispatchEvent(new CustomEvent('vantage:app-sync'));
     }
   };
   document.addEventListener('visibilitychange', syncOnResume);
-  window.addEventListener('focus', () => {
-    void checkServerVersionAndSync(false);
-  });
   window.addEventListener('online', () => {
     void checkServerVersionAndSync(false);
     window.dispatchEvent(new CustomEvent('vantage:app-sync'));

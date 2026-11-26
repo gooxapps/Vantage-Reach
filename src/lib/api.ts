@@ -61,6 +61,34 @@ export function getAuthToken(): string | null {
   return null;
 }
 
+let verifyingUnauthorized: Promise<void> | null = null;
+
+async function confirmAndNotifyUnauthorized(requestToken: string | null) {
+  // If token already changed (e.g., user just signed in/registered while an older call was in flight), ignore
+  if (getAuthToken() !== requestToken) return;
+  if (verifyingUnauthorized) return verifyingUnauthorized;
+
+  verifyingUnauthorized = (async () => {
+    try {
+      const currentToken = getAuthToken();
+      const verifyRes = await fetch('/api/auth/me', {
+        credentials: 'include',
+        headers: currentToken ? { Authorization: `Bearer ${currentToken}` } : {},
+      });
+      // Only force logout when /api/auth/me confirms 401 for the active token
+      if (verifyRes.status === 401 && getAuthToken() === currentToken) {
+        notifyUnauthorized();
+      }
+    } catch {
+      // Transient network drops must never wipe an active login session
+    } finally {
+      verifyingUnauthorized = null;
+    }
+  })();
+
+  return verifyingUnauthorized;
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const token = getAuthToken();
   const res = await fetch(path, {
@@ -95,8 +123,8 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
       path !== '/api/auth/register' &&
       path !== '/api/auth/me'
     ) {
-      notifyUnauthorized();
-    } else if (res.status === 401 && path === '/api/auth/me') {
+      void confirmAndNotifyUnauthorized(token);
+    } else if (res.status === 401 && path === '/api/auth/me' && getAuthToken() === token) {
       setAuthToken(null);
     }
     throw new ApiError(data?.error || `Request failed (${res.status})`, res.status, data?.code, data);
@@ -117,7 +145,7 @@ export async function downloadAuthorizedFile(path: string, filename: string) {
   });
   if (!res.ok) {
     if (res.status === 401) {
-      notifyUnauthorized();
+      void confirmAndNotifyUnauthorized(token);
     }
     throw new ApiError('Failed to download report.', res.status);
   }

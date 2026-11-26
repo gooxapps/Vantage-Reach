@@ -13,11 +13,22 @@ function getSessionSecret(): string {
   if (configured && configured !== 'replace-with-strong-random-secret') {
     return configured;
   }
+  const envSeed =
+    process.env.DATABASE_URL?.trim() ||
+    process.env.POSTGRES_URL?.trim() ||
+    process.env.DATABASE_POSTGRES_URL?.trim() ||
+    process.env.POSTGRES_PRISMA_URL?.trim() ||
+    process.env.GEMINI_API_KEY?.trim() ||
+    process.env.YOUTUBE_API_KEY?.trim() ||
+    '';
   if (!warnedMissingSessionSecret) {
     warnedMissingSessionSecret = true;
     console.warn(
-      '[security] SESSION_SECRET is not set; using an ephemeral secret for this process. Set SESSION_SECRET in environment variables for persistent sessions.'
+      '[security] SESSION_SECRET is not set; set SESSION_SECRET in environment variables for dedicated session signing.'
     );
+  }
+  if (envSeed) {
+    return crypto.createHmac('sha256', 'vantage-reach-session-fallback-v1').update(envSeed).digest('hex');
   }
   return EPHEMERAL_FALLBACK_SECRET;
 }
@@ -161,13 +172,16 @@ export async function requireAuth(req: AuthRequest, res: Response, next: NextFun
   try {
     const cookies = parseCookies(req);
     const bearer = req.headers.authorization?.startsWith('Bearer ')
-      ? req.headers.authorization.slice(7)
+      ? req.headers.authorization.slice(7).trim()
       : null;
-    const token = cookies[SESSION_COOKIE] || bearer;
-    if (!token) {
+    const cookieToken = cookies[SESSION_COOKIE]?.trim() || null;
+
+    if (!bearer && !cookieToken) {
       return res.status(401).json({ error: 'Authentication required' });
     }
-    const payload = verifySessionToken(token);
+    const payload =
+      (bearer ? verifySessionToken(bearer) : null) ||
+      (cookieToken ? verifySessionToken(cookieToken) : null);
     if (!payload) {
       return res.status(401).json({ error: 'Invalid or expired session' });
     }

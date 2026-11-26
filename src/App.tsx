@@ -33,7 +33,7 @@ import { SeoAndCompetitorsView } from './components/SeoAndCompetitorsView';
 import { SubmitVideoView } from './components/SubmitVideoView';
 import { VideoIntelligenceView } from './components/VideoIntelligenceView';
 import { usePWAInstall } from './hooks/usePWAInstall';
-import { api, formatDate, onUnauthorized, setAuthToken } from './lib/api';
+import { ApiError, api, formatDate, getAuthToken, onUnauthorized, setAuthToken } from './lib/api';
 import { initVisitorTracker, trackScreenView } from './lib/visitorTracker';
 import type { NotificationRecord, UserSession } from './types';
 
@@ -46,6 +46,9 @@ type NavTab =
   | 'campaigns'
   | 'reports'
   | 'profile';
+
+const VALID_TABS: NavTab[] = ['dashboard', 'submit', 'intelligence', 'seo', 'plans', 'campaigns', 'reports', 'profile'];
+const ACTIVE_TAB_KEY = 'vr_active_tab';
 
 function getInitials(fullName: string, email: string): string {
   const source = (fullName || email.split('@')[0] || 'VR').trim();
@@ -79,17 +82,28 @@ export default function App() {
     }
   }, []);
 
-  const refreshMe = async () => {
+  const refreshMe = async (retryOnTransient = true) => {
     try {
       const res = await api.get<{ user: UserSession }>('/api/auth/me');
       setUser(res.user);
       if (!res.user.isAdmin) {
         fetchNotifications();
       }
-    } catch {
-      setAuthToken(null);
-      setUser(null);
-    } finally {
+      setCheckingAuth(false);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) {
+        setAuthToken(null);
+        setUser(null);
+        setCheckingAuth(false);
+        return;
+      }
+      // Transient cold-start / network error when a token exists: retry once quietly
+      if (retryOnTransient && getAuthToken()) {
+        window.setTimeout(() => {
+          void refreshMe(false);
+        }, 600);
+        return;
+      }
       setCheckingAuth(false);
     }
   };
@@ -103,20 +117,36 @@ export default function App() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const tabParam = params.get('tab') as NavTab | null;
-    if (
-      tabParam &&
-      ['dashboard', 'submit', 'intelligence', 'seo', 'plans', 'campaigns', 'reports', 'profile'].includes(tabParam)
-    ) {
+    if (tabParam && VALID_TABS.includes(tabParam)) {
       setActiveTab(tabParam);
+      try {
+        sessionStorage.setItem(ACTIVE_TAB_KEY, tabParam);
+      } catch {
+        // Ignore
+      }
+    } else {
+      try {
+        const savedTab = sessionStorage.getItem(ACTIVE_TAB_KEY) as NavTab | null;
+        if (savedTab && VALID_TABS.includes(savedTab)) {
+          setActiveTab(savedTab);
+        }
+      } catch {
+        // Ignore
+      }
     }
 
     initVisitorTracker();
-    refreshMe();
+    void refreshMe(true);
     const unsubscribe = onUnauthorized(() => {
       setUser(null);
       setActiveTab('dashboard');
       setSelectedVideoId(null);
       setNotifications([]);
+      try {
+        sessionStorage.removeItem(ACTIVE_TAB_KEY);
+      } catch {
+        // Ignore
+      }
     });
     const handleAppSync = () => {
       if (isAuthedRef.current && !isAdminRef.current) {
@@ -204,7 +234,15 @@ export default function App() {
 
   const handleNavigate = (tab: string, videoId?: number) => {
     if (videoId) setSelectedVideoId(videoId);
-    setActiveTab(tab as NavTab);
+    const nextTab = tab as NavTab;
+    setActiveTab(nextTab);
+    try {
+      if (VALID_TABS.includes(nextTab)) {
+        sessionStorage.setItem(ACTIVE_TAB_KEY, nextTab);
+      }
+    } catch {
+      // Ignore
+    }
     setNotifOpen(false);
     setProfileMenuOpen(false);
     if (tab === 'dashboard') fetchNotifications();
@@ -224,6 +262,11 @@ export default function App() {
     setNotifications([]);
     setNotifOpen(false);
     setProfileMenuOpen(false);
+    try {
+      sessionStorage.removeItem(ACTIVE_TAB_KEY);
+    } catch {
+      // Ignore
+    }
   };
 
   const markAllNotificationsRead = async () => {
@@ -269,8 +312,14 @@ export default function App() {
         <AuthViews
           onAuthenticated={(u) => {
             setUser(u);
+            setCheckingAuth(false);
             if (!u.isAdmin) {
               setActiveTab('dashboard');
+              try {
+                sessionStorage.setItem(ACTIVE_TAB_KEY, 'dashboard');
+              } catch {
+                // Ignore
+              }
               fetchNotifications();
             }
           }}

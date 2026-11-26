@@ -15,7 +15,7 @@ export default defineConfig(() => {
       react(),
       tailwindcss(),
       VitePWA({
-        registerType: 'autoUpdate',
+        registerType: 'prompt',
         includeAssets: [],
         manifest: {
           id: '/',
@@ -58,8 +58,8 @@ export default defineConfig(() => {
           globIgnores: ['**/assets/aistudio/**', '**/node_modules/**', 'sw.js', 'workbox-*.js'],
           maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
           cleanupOutdatedCaches: true,
-          skipWaiting: true,
-          clientsClaim: true,
+          skipWaiting: false,
+          clientsClaim: false,
           navigateFallback: null,
           ignoreURLParametersMatching: [/^utm_/, /^fbclid$/],
           runtimeCaching: [

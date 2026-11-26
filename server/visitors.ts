@@ -264,11 +264,13 @@ export async function tryResolveOptionalUser(req: Request): Promise<AuthedUser |
   try {
     const cookies = parseCookies(req);
     const bearer = req.headers.authorization?.startsWith('Bearer ')
-      ? req.headers.authorization.slice(7)
+      ? req.headers.authorization.slice(7).trim()
       : null;
-    const token = cookies['vr_session'] || bearer;
-    if (!token) return null;
-    const payload = verifySessionToken(token);
+    const cookieToken = cookies['vr_session']?.trim() || null;
+    if (!bearer && !cookieToken) return null;
+    const payload =
+      (bearer ? verifySessionToken(bearer) : null) ||
+      (cookieToken ? verifySessionToken(cookieToken) : null);
     if (!payload) return null;
     return await loadUserById(payload.uid);
   } catch {
